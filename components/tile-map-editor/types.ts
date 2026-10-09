@@ -1,0 +1,127 @@
+export type Tool = "place" | "erase" | "select" | "collider" | "marker" | "drag"
+
+export type ColliderType = "ground" | "chest" | "ladder" | "door" | "kill"
+
+export interface EntityDefinition {
+  id: string
+  name: string
+  imageSrc: string
+  width: number
+  height: number
+  // For spritesheets: number of frames and frame width (defaults to width if not set)
+  frameCount?: number
+  frameWidth?: number
+}
+
+export interface PlacedTile {
+  tileId: string
+  x: number
+  y: number
+  locked?: boolean
+  layer?: number
+  creationCode?: string | null
+}
+
+export interface Marker {
+  name: string
+  x: number
+  y: number
+}
+
+export interface Collider {
+  x: number
+  y: number
+  width: number
+  height: number
+  type: ColliderType
+}
+
+export interface AtlasFrame {
+  frame: { x: number; y: number; w: number; h: number }
+  spriteSourceSize: { x: number; y: number; w: number; h: number }
+  sourceSize: { w: number; h: number }
+  rotated?: boolean
+  trimmed?: boolean
+  pivot?: { x: number; y: number }
+}
+
+export interface TextureAtlas {
+  frames: Record<string, AtlasFrame>
+  meta?: {
+    image?: string
+    size?: { w: number; h: number }
+    scale?: number
+  }
+}
+
+export interface MapData {
+  [key: string]: PlacedTile[] | Collider[]
+  colliders: Collider[]
+}
+
+export interface Camera {
+  x: number
+  y: number
+  zoom: number
+}
+
+export const GRID_SIZE = 16
+export const LAYER_COUNT = 5
+
+export function normalizeTileId(tileId: string): string {
+  switch (tileId) {
+    case "bgSphinx":
+    case "enSphinx":
+    case "bossSphynx":
+    case "standingSphynx":
+      return "lwSphinx"
+    case "standingBastet":
+      return "bossBastet"
+    default:
+      return tileId
+  }
+}
+
+// Objects, enemies and the player spawn (not atlas tiles)
+export function isEntityId(tileId: string): boolean {
+  return (
+    normalizeTileId(tileId) === "lwSphinx" ||
+    normalizeTileId(tileId) === "bossBastet" ||
+    tileId === "bgCloud" ||
+    tileId === "bgGreyCloud" ||
+    tileId === "bgPyramid" ||
+    tileId.startsWith("ob") ||
+    tileId.startsWith("en") ||
+    tileId.startsWith("boss") ||
+    tileId.startsWith("sprite")
+  )
+}
+
+// Tiles default to layer 1 (index 0), other objects to layer 2 (index 1)
+export function defaultLayerFor(tileId: string): number {
+  return isEntityId(tileId) ? 1 : 0
+}
+
+export function normalizeLayer(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value)
+    ? Math.min(Math.max(value, 0), LAYER_COUNT - 1)
+    : 0
+}
+export const MIN_ZOOM = 0.25
+export const MAX_ZOOM = 4
+
+export const COLLIDER_COLORS: Record<ColliderType, string> = {
+  ground: "rgba(59, 130, 246, 0.35)",
+  chest: "rgba(234, 179, 8, 0.35)",
+  ladder: "rgba(34, 197, 94, 0.35)",
+  door: "rgba(168, 85, 247, 0.35)",
+  kill: "rgba(239, 68, 68, 0.35)",
+}
+
+export const COLLIDER_BORDER_COLORS: Record<ColliderType, string> = {
+  ground: "rgba(59, 130, 246, 0.8)",
+  chest: "rgba(234, 179, 8, 0.8)",
+  ladder: "rgba(34, 197, 94, 0.8)",
+  door: "rgba(168, 85, 247, 0.8)",
+  kill: "rgba(239, 68, 68, 0.8)",
+}
