@@ -1,5 +1,5 @@
-import type { CanvasSize, Crop, ElementResource, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectInstance, ResourceReference, TextureAtlas, Tilemap, Tileset } from "./types"
-import { GRID_SIZE, defaultLayerFor, normalizeLayer, normalizeTileId } from "./types"
+import type { CanvasSize, ColliderTypeDefinition, Crop, ElementResource, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectInstance, ResourceReference, TextureAtlas, Tilemap, Tileset } from "./types"
+import { DEFAULT_COLLIDER_TYPES, GRID_SIZE, defaultLayerFor, normalizeLayer, normalizeTileId } from "./types"
 import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./default-elements"
 import { createAssetResolver } from "./asset-resolver"
 
@@ -17,7 +17,7 @@ export function emptyProject(): ProjectDocument {
   return {
     format: "tilemap-editor", version: 1, images: [], tilesets: [], elementDefinitions: [],
     tilemaps: [{ id: DEFAULT_TILEMAP_ID, name: "TileMap", visible: true, layer: 0, cellWidth: GRID_SIZE, cellHeight: GRID_SIZE, origin: { x: 0, y: 0 }, tiles: [] }],
-    elements: [], colliders: [], markers: [], scene: { backgroundColor: "#1a1a2e", canvasSize: { ...DEFAULT_CANVAS_SIZE }, objectAlignment: DEFAULT_OBJECT_ALIGNMENT, annotationAlignment: { ...DEFAULT_OBJECT_ALIGNMENT, origin: { ...DEFAULT_OBJECT_ALIGNMENT.origin } } },
+    elements: [], colliders: [], colliderTypes: [], markers: [], scene: { backgroundColor: "#1a1a2e", canvasSize: { ...DEFAULT_CANVAS_SIZE }, objectAlignment: DEFAULT_OBJECT_ALIGNMENT, annotationAlignment: { ...DEFAULT_OBJECT_ALIGNMENT, origin: { ...DEFAULT_OBJECT_ALIGNMENT.origin } } },
   }
 }
 
@@ -186,6 +186,33 @@ export function deleteTilemap(project: ProjectDocument, id: string): ProjectDocu
   return { ...project, tilemaps: project.tilemaps.filter((map) => map.id !== id) }
 }
 
+export function colliderTypeDefinitions(project: ProjectDocument): ColliderTypeDefinition[] {
+  return [...DEFAULT_COLLIDER_TYPES, ...(project.colliderTypes ?? [])]
+}
+
+function validateCustomColliderTypes(definitions: unknown): asserts definitions is ColliderTypeDefinition[] {
+  if (!Array.isArray(definitions) || definitions.length > 100) throw new Error("Lista de tipos de collider inválida.")
+  const ids = new Set(DEFAULT_COLLIDER_TYPES.map((type) => type.id))
+  const labels = new Set(DEFAULT_COLLIDER_TYPES.map((type) => type.label.toLocaleLowerCase()))
+  for (const value of definitions) {
+    const type = record(value, "Tipo de collider")
+    if (typeof type.id !== "string" || !type.id.startsWith("collider-type:") || ids.has(type.id) ||
+        typeof type.label !== "string" || !type.label.trim() || type.label !== type.label.trim() || type.label.length > 40 ||
+        labels.has(type.label.toLocaleLowerCase()) || typeof type.color !== "string" || !/^#[0-9a-f]{6}$/i.test(type.color)) {
+      throw new Error("Tipo de collider inválido ou duplicado.")
+    }
+    ids.add(type.id)
+    labels.add(type.label.toLocaleLowerCase())
+  }
+}
+
+export function addColliderType(project: ProjectDocument, label: string, color: string, id = newId("collider-type")): ProjectDocument {
+  const definition = { id, label: label.trim(), color }
+  const types = [...(project.colliderTypes ?? []), definition]
+  validateCustomColliderTypes(types)
+  return { ...project, colliderTypes: types }
+}
+
 export function renameTilemap(project: ProjectDocument, id: string, name: string): ProjectDocument {
   const normalizedName = name.trim()
   if (!normalizedName) throw new Error("O tilemap precisa de um nome.")
@@ -306,6 +333,27 @@ export function eraseTile(project: ProjectDocument, x: number, y: number, layer:
   return tiles.length === content.tiles.length ? project : replaceEditorContent(project, { ...content, tiles })
 }
 
+export interface WorldRect { x: number; y: number; width: number; height: number }
+
+export function eraseArea(project: ProjectDocument, area: WorldRect, layer: number, tilemapId = project.tilemaps[0].id): ProjectDocument {
+  const map = project.tilemaps.find((item) => item.id === tilemapId)
+  if (!map || !map.visible) return project
+  const content = editorContent(project)
+  const catalog = createCatalog(project)
+  const doomed = new Set<string>()
+  for (const tile of content.tiles) {
+    if (!tile.id || tile.locked || (tile.layer ?? 0) !== layer) continue
+    const isElement = tile.resource.kind === "element"
+    if (!isElement && (tile.tilemapId ?? DEFAULT_TILEMAP_ID) !== tilemapId) continue
+    const crop = resolveInstance(tile, catalog)?.crop
+    const width = crop?.width ?? GRID_SIZE
+    const height = crop?.height ?? GRID_SIZE
+    if (tile.x < area.x + area.width && tile.x + width > area.x && tile.y < area.y + area.height && tile.y + height > area.y) doomed.add(tile.id)
+  }
+  if (!doomed.size) return project
+  return replaceEditorContent(project, { ...content, tiles: content.tiles.filter((tile) => !tile.id || !doomed.has(tile.id)) })
+}
+
 export function addElementDefinition(project: ProjectDocument, definition: ElementResource, image?: ImageResource): ProjectDocument {
   if (!definition.name.trim() || project.elementDefinitions.some((item) => item.id === definition.id)) throw new Error("Definição de elemento inválida ou duplicada.")
   if (image && project.images.some((item) => item.id === image.id)) throw new Error("ID de imagem duplicado.")
@@ -378,6 +426,7 @@ export function importLegacy(data: unknown, defaults: ProjectDocument): ProjectD
 
 export function legacyExportIssues(project: ProjectDocument): string[] {
   const issues: string[] = []
+  if (project.colliderTypes?.length) issues.push("O formato antigo não preserva tipos personalizados de collider. Use Salvar projeto.")
   if (project.tilemaps.length !== 1) issues.push("O formato antigo suporta apenas um tilemap.")
   if (project.tilemaps.some((map) => map.cellWidth !== GRID_SIZE || map.cellHeight !== GRID_SIZE || map.origin.x !== 0 || map.origin.y !== 0 || !map.visible || (map.layer ?? 0) !== 0)) issues.push("O formato antigo não preserva grades, camadas ou visibilidade de tilemaps.")
   const alignment = project.scene.objectAlignment ?? DEFAULT_OBJECT_ALIGNMENT
@@ -409,6 +458,7 @@ export function parseProject(data: unknown): ProjectDocument {
     if (!Array.isArray(json[key])) throw new Error(`Lista inválida: ${key}.`)
   }
   const project = json as unknown as ProjectDocument
+  if (project.colliderTypes !== undefined) validateCustomColliderTypes(project.colliderTypes)
   const scene = record(project.scene, "Cenário")
   if (typeof scene.backgroundColor !== "string" || !/^#[0-9a-f]{6}$/i.test(scene.backgroundColor)) throw new Error("Cor de fundo inválida.")
   if (scene.canvasSize !== undefined) validateCanvasSize(record(scene.canvasSize, "Tamanho do canvas") as unknown as CanvasSize)
@@ -473,8 +523,15 @@ export function parseProject(data: unknown): ProjectDocument {
     if (map.tiles.some((tile) => tile.resource.kind === "element" || tile.tilemapId !== map.id)) throw new Error("Instância associada ao tilemap errado.")
   }
   if (project.elements.some((tile) => tile.resource.kind !== "element")) throw new Error("Referência de elemento inválida.")
-  // Reuse the legacy structural checks for colliders and markers.
-  importLegacy({ tiles: {}, colliders: project.colliders, markers: project.markers }, emptyProject())
+  const validColliderTypes = new Set(colliderTypeDefinitions(project).map((type) => type.id))
+  for (const value of project.colliders) {
+    const collider = record(value, "Collider")
+    position(collider, "collider")
+    if (!finite(collider.width) || collider.width <= 0 || !finite(collider.height) || collider.height <= 0 ||
+        typeof collider.type !== "string" || !validColliderTypes.has(collider.type)) throw new Error("Collider inválido ou tipo não definido.")
+  }
+  // Reuse the legacy structural checks for markers.
+  importLegacy({ tiles: {}, markers: project.markers }, emptyProject())
   return project
 }
 

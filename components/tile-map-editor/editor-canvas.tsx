@@ -6,6 +6,7 @@ import type {
   PlacedTile,
   Collider,
   ColliderType,
+  ColliderTypeDefinition,
   Marker,
   Camera,
   CanvasSize,
@@ -16,8 +17,7 @@ import {
   GRID_SIZE,
   MIN_ZOOM,
   MAX_ZOOM,
-  COLLIDER_COLORS,
-  COLLIDER_BORDER_COLORS,
+  colliderColor,
 } from "./types"
 import { snapToTilemap } from "./project"
 import { compareDisplayOrder, resolveInstance } from "./project"
@@ -31,6 +31,8 @@ interface EditorCanvasProps {
   images: Map<string, HTMLImageElement>
   tiles: PlacedTile[]
   colliders: Collider[]
+  colliderTypes: ColliderTypeDefinition[]
+  onCreateColliderType: (label: string, color: string) => string
   markers: Marker[]
   showMarkers: boolean
   selectedMarkers: Marker[]
@@ -46,6 +48,7 @@ interface EditorCanvasProps {
   onCameraChange: (camera: Camera) => void
   onPlaceTile: (worldX: number, worldY: number) => void
   onEraseTile: (worldX: number, worldY: number) => void
+  onEraseArea: (area: { x: number; y: number; width: number; height: number }) => void
   onSelectTile: (worldX: number, worldY: number) => PlacedTile | null
   onMoveElements: (origins: { id: string; x: number; y: number }[], dx: number, dy: number) => void
   onSelectCollider: (worldX: number, worldY: number) => void
@@ -66,6 +69,8 @@ export function EditorCanvas({
   images,
   tiles,
   colliders: allColliders,
+  colliderTypes,
+  onCreateColliderType,
   markers: allMarkers,
   showMarkers,
   selectedMarkers,
@@ -81,6 +86,7 @@ export function EditorCanvas({
   onCameraChange,
   onPlaceTile,
   onEraseTile,
+  onEraseArea,
   onSelectTile,
   onMoveElements,
   onSelectCollider,
@@ -122,6 +128,9 @@ export function EditorCanvas({
     x: number
     y: number
   } | null>(null)
+  // Eraser drag rectangle (world coordinates)
+  const [eraseStart, setEraseStart] = useState<{ x: number; y: number } | null>(null)
+  const [eraseEnd, setEraseEnd] = useState<{ x: number; y: number } | null>(null)
   const [showColliderPopup, setShowColliderPopup] = useState(false)
   const [pendingCollider, setPendingCollider] = useState<{
     x: number
@@ -130,6 +139,15 @@ export function EditorCanvas({
     height: number
   } | null>(null)
   const [colliderType, setColliderType] = useState<ColliderType>("ground")
+  const [creatingColliderType, setCreatingColliderType] = useState(false)
+  const [newColliderLabel, setNewColliderLabel] = useState("")
+  const [newColliderColor, setNewColliderColor] = useState("#f97316")
+  const duplicateColliderLabel = colliderTypes.some((type) => type.label.toLocaleLowerCase() === newColliderLabel.trim().toLocaleLowerCase())
+  const validColliderLabel = !!newColliderLabel.trim() && newColliderLabel.trim().length <= 40 && !duplicateColliderLabel
+
+  useEffect(() => {
+    if (!colliderTypes.some((type) => type.id === colliderType)) setColliderType("ground")
+  }, [colliderTypes, colliderType])
 
   const screenToWorld = useCallback(
     (sx: number, sy: number) => {
@@ -266,10 +284,9 @@ export function EditorCanvas({
     // Colliders
     for (const collider of colliders) {
       if (collider.x >= viewRight || collider.x + collider.width <= viewLeft || collider.y >= viewBottom || collider.y + collider.height <= viewTop) continue
-      const color = COLLIDER_COLORS[collider.type] || COLLIDER_COLORS.ground
-      const borderColor =
-        COLLIDER_BORDER_COLORS[collider.type] ||
-        COLLIDER_BORDER_COLORS.ground
+      const definition = colliderTypes.find((type) => type.id === collider.type)
+      const color = colliderColor(definition?.color ?? "#3b82f6", 0.35)
+      const borderColor = colliderColor(definition?.color ?? "#3b82f6", 0.8)
 
       ctx.fillStyle = color
       ctx.fillRect(collider.x, collider.y, collider.width, collider.height)
@@ -292,7 +309,7 @@ export function EditorCanvas({
       ctx.fillStyle = borderColor
       ctx.textBaseline = "top"
       ctx.fillText(
-        collider.type,
+        definition?.label ?? collider.type,
         collider.x + 3 / camera.zoom,
         collider.y + 3 / camera.zoom
       )
@@ -351,11 +368,25 @@ export function EditorCanvas({
       const sw = Math.abs(colliderEnd.x - colliderStart.x)
       const sh = Math.abs(colliderEnd.y - colliderStart.y)
 
-      ctx.fillStyle = COLLIDER_COLORS[colliderType]
+      const previewColor = colliderTypes.find((type) => type.id === colliderType)?.color ?? "#3b82f6"
+      ctx.fillStyle = colliderColor(previewColor, 0.35)
       ctx.fillRect(sx, sy, sw, sh)
-      ctx.strokeStyle = COLLIDER_BORDER_COLORS[colliderType]
+      ctx.strokeStyle = colliderColor(previewColor, 0.8)
       ctx.lineWidth = 2 / camera.zoom
       ctx.strokeRect(sx, sy, sw, sh)
+    }
+
+    // Eraser selection area
+    if (eraseStart && eraseEnd) {
+      ctx.fillStyle = "rgba(239, 68, 68, 0.2)"
+      ctx.strokeStyle = "rgba(239, 68, 68, 0.9)"
+      ctx.lineWidth = 1.5 / camera.zoom
+      ctx.setLineDash([5 / camera.zoom, 4 / camera.zoom])
+      const ex = Math.min(eraseStart.x, eraseEnd.x)
+      const ey = Math.min(eraseStart.y, eraseEnd.y)
+      ctx.fillRect(ex, ey, Math.abs(eraseEnd.x - eraseStart.x), Math.abs(eraseEnd.y - eraseStart.y))
+      ctx.strokeRect(ex, ey, Math.abs(eraseEnd.x - eraseStart.x), Math.abs(eraseEnd.y - eraseStart.y))
+      ctx.setLineDash([])
     }
 
     ctx.restore()
@@ -378,7 +409,10 @@ export function EditorCanvas({
     selectedColliders,
     colliderStart,
     colliderEnd,
+    eraseStart,
+    eraseEnd,
     colliderType,
+    colliderTypes,
     backgroundColor,
     canvasSize,
   ])
@@ -509,8 +543,8 @@ export function EditorCanvas({
         onPlaceTile(world.x, world.y)
       } else if (activeTool === "erase") {
         isDrawingRef.current = true
-        onStartBatch?.()
-        onEraseTile(world.x, world.y)
+        setEraseStart(world)
+        setEraseEnd(world)
       } else if (activeTool === "marker") {
         const existing = markerAt()
         if (existing) onSelectMarker(existing)
@@ -601,12 +635,18 @@ export function EditorCanvas({
       if (!isDrawingRef.current) return
 
       const world = screenToWorld(sx, sy)
+      if (activeTool === "erase") {
+        // Clamp so the area can be dragged past the canvas edge
+        setEraseEnd({
+          x: Math.max(0, Math.min(canvasSize.width, world.x)),
+          y: Math.max(0, Math.min(canvasSize.height, world.y)),
+        })
+        return
+      }
       if (!insideCanvas(world.x, world.y)) return
 
       if (activeTool === "place") {
         onPlaceTile(world.x, world.y)
-      } else if (activeTool === "erase") {
-        onEraseTile(world.x, world.y)
       } else if (activeTool === "collider" && colliderStart) {
         const snapped = annotationAlignment.enabled ? {
           x: annotationAlignment.origin.x + Math.round((world.x - annotationAlignment.origin.x) / annotationAlignment.cellWidth) * annotationAlignment.cellWidth,
@@ -621,7 +661,7 @@ export function EditorCanvas({
       screenToWorld,
       onCameraChange,
       onPlaceTile,
-      onEraseTile,
+      canvasSize,
       onMoveElements,
       colliderStart,
       annotationAlignment,
@@ -637,9 +677,22 @@ export function EditorCanvas({
       onEndBatch?.()
     }
 
-    // End batch for place/erase operations
-    if (isDrawingRef.current && (activeTool === "place" || activeTool === "erase")) {
+    // End batch for place operations
+    if (isDrawingRef.current && activeTool === "place") {
       onEndBatch?.()
+    }
+
+    if (isDrawingRef.current && activeTool === "erase" && eraseStart && eraseEnd) {
+      const width = Math.abs(eraseEnd.x - eraseStart.x)
+      const height = Math.abs(eraseEnd.y - eraseStart.y)
+      // Tiny drags count as a plain click on a single item
+      if (width * cameraRef.current.zoom < 4 && height * cameraRef.current.zoom < 4) {
+        onEraseTile(eraseStart.x, eraseStart.y)
+      } else {
+        onEraseArea({ x: Math.min(eraseStart.x, eraseEnd.x), y: Math.min(eraseStart.y, eraseEnd.y), width, height })
+      }
+      setEraseStart(null)
+      setEraseEnd(null)
     }
 
     if (
@@ -663,7 +716,7 @@ export function EditorCanvas({
     }
 
     isDrawingRef.current = false
-  }, [activeTool, colliderStart, colliderEnd, annotationAlignment, onEndBatch])
+  }, [activeTool, colliderStart, colliderEnd, eraseStart, eraseEnd, annotationAlignment, onEndBatch, onEraseTile, onEraseArea])
 
   const confirmCollider = useCallback(() => {
     if (pendingCollider) {
@@ -671,11 +724,13 @@ export function EditorCanvas({
     }
     setPendingCollider(null)
     setShowColliderPopup(false)
+    setCreatingColliderType(false)
   }, [pendingCollider, colliderType, onAddCollider])
 
   const cancelCollider = useCallback(() => {
     setPendingCollider(null)
     setShowColliderPopup(false)
+    setCreatingColliderType(false)
   }, [])
 
   const getCursor = () => {
@@ -715,21 +770,36 @@ export function EditorCanvas({
           }}
         >
           <p className="mb-2 text-xs text-[#8888aa]">Tipo do Collider:</p>
-          <div className="mb-2 flex gap-1">
-            {(["ground", "chest", "ladder", "door", "kill"] as ColliderType[]).map((t) => (
+          <div className="mb-2 flex max-w-64 flex-wrap gap-1">
+            {colliderTypes.map((type) => (
               <button
-                key={t}
-                onClick={() => setColliderType(t)}
-                className={`rounded px-2 py-1 text-xs capitalize ${
-                  colliderType === t
+                key={type.id}
+                onClick={() => setColliderType(type.id)}
+                className={`flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                  colliderType === type.id
                     ? "bg-[#4a90d9] text-[#ffffff]"
                     : "bg-[#2a2a4a] text-[#8888aa]"
                 }`}
               >
-                {t}
+                <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: type.color }} />{type.label}
               </button>
             ))}
           </div>
+          {creatingColliderType ? <div className="mb-2 space-y-2 border-t border-[#2a2a4a] pt-2 text-xs">
+            <label className="block text-[#aaaacc]">Label
+              <input autoFocus type="text" maxLength={40} value={newColliderLabel} onChange={(event) => setNewColliderLabel(event.target.value)} className="mt-1 w-full rounded bg-[#1a1a2e] px-2 py-1.5 text-[#e0e0e0] outline-none focus:ring-1 focus:ring-[#4a90d9]" />
+            </label>
+            <label className="flex items-center gap-2 text-[#aaaacc]">Cor
+              <input type="color" value={newColliderColor} onChange={(event) => setNewColliderColor(event.target.value)} className="h-7 w-9 cursor-pointer" />
+            </label>
+            {duplicateColliderLabel && <p role="alert" className="text-amber-300">Já existe um tipo com esse label.</p>}
+            <button type="button" disabled={!validColliderLabel} onClick={() => {
+              const id = onCreateColliderType(newColliderLabel.trim(), newColliderColor)
+              setColliderType(id)
+              setNewColliderLabel("")
+              setCreatingColliderType(false)
+            }} className="rounded bg-[#4a90d9] px-2 py-1 disabled:opacity-40">Criar tipo</button>
+          </div> : <button type="button" onClick={() => setCreatingColliderType(true)} className="mb-2 text-xs text-[#72b6ff] hover:underline">+ Novo tipo de collider</button>}
           <div className="flex gap-1">
             <button
               onClick={confirmCollider}

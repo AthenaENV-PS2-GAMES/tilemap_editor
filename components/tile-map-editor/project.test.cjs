@@ -85,6 +85,25 @@ test("legacy export retains map data and normalizes the known sprite aliases", (
   assert.deepEqual(result.markers, legacy.markers)
 })
 
+test("custom collider types keep their label, color and references in project files", () => {
+  const base = portable(defaults())
+  const withType = api.addColliderType(base, "Lava", "#ff6600", "collider-type:lava")
+  const project = { ...withType, colliders: [...withType.colliders, { x: 0, y: 0, width: 16, height: 16, type: "collider-type:lava" }] }
+  assert.equal(api.colliderTypeDefinitions(project).length, 6)
+  assert.deepEqual(api.colliderTypeDefinitions(project)[5], { id: "collider-type:lava", label: "Lava", color: "#ff6600" })
+  assert.deepEqual(api.parseProject(JSON.parse(JSON.stringify(project))), project)
+  assert.throws(() => api.exportLegacy(project), /tipos personalizados/)
+  assert.throws(() => api.addColliderType(project, "lava", "#123456", "collider-type:other"), /duplicado/)
+  assert.throws(() => api.addColliderType(base, "ground", "#123456", "collider-type:other"), /duplicado/)
+  assert.throws(() => api.addColliderType(base, "Lava", "red", "collider-type:other"), /inválido/)
+  const missingType = JSON.parse(JSON.stringify(project))
+  missingType.colliderTypes = []
+  assert.throws(() => api.parseProject(missingType), /tipo não definido/)
+  const old = JSON.parse(JSON.stringify(base))
+  delete old.colliderTypes
+  assert.deepEqual(api.parseProject(old), old)
+})
+
 test("calculates regular crops with margins, spacing and incomplete edge cells", () => {
   const crops = api.gridCrops({ width: 38, height: 39 }, { width: 16, height: 16, margin: 2, spacing: 2 })
   assert.deepEqual(crops.map(({ x, y, width, height }) => ({ x, y, width, height })), [

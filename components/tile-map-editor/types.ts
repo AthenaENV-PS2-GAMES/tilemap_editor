@@ -1,6 +1,12 @@
 export type Tool = "place" | "erase" | "select" | "collider" | "marker" | "drag"
 
-export type ColliderType = "ground" | "chest" | "ladder" | "door" | "kill"
+export type ColliderType = string
+
+export interface ColliderTypeDefinition {
+  id: string
+  label: string
+  color: string
+}
 
 export interface EntityDefinition {
   id: string
@@ -112,6 +118,7 @@ export interface ProjectDocument {
   tilemaps: Tilemap[]
   elements: ProjectInstance[]
   colliders: Collider[]
+  colliderTypes?: ColliderTypeDefinition[]
   markers: Marker[]
   scene: { backgroundColor: string; canvasSize?: CanvasSize; objectAlignment?: ObjectAlignment; annotationAlignment?: ObjectAlignment }
 }
@@ -204,18 +211,15 @@ export function normalizeLayer(value: unknown): number {
 export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 4
 
-export const COLLIDER_COLORS: Record<ColliderType, string> = {
-  ground: "rgba(59, 130, 246, 0.35)",
-  chest: "rgba(234, 179, 8, 0.35)",
-  ladder: "rgba(34, 197, 94, 0.35)",
-  door: "rgba(168, 85, 247, 0.35)",
-  kill: "rgba(239, 68, 68, 0.35)",
-}
+export const DEFAULT_COLLIDER_TYPES: ColliderTypeDefinition[] = [
+  { id: "ground", label: "ground", color: "#3b82f6" },
+  { id: "chest", label: "chest", color: "#eab308" },
+  { id: "ladder", label: "ladder", color: "#22c55e" },
+  { id: "door", label: "door", color: "#a855f7" },
+  { id: "kill", label: "kill", color: "#ef4444" },
+]
 
-export const COLLIDER_BORDER_COLORS: Record<ColliderType, string> = {
-  ground: "rgba(59, 130, 246, 0.8)",
-  chest: "rgba(234, 179, 8, 0.8)",
-  ladder: "rgba(34, 197, 94, 0.8)",
-  door: "rgba(168, 85, 247, 0.8)",
-  kill: "rgba(239, 68, 68, 0.8)",
+export function colliderColor(color: string, opacity: number): string {
+  const rgb = [1, 3, 5].map((index) => parseInt(color.slice(index, index + 2), 16))
+  return `rgba(${rgb.join(", ")}, ${opacity})`
 }

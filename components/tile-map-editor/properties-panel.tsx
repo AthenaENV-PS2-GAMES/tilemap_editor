@@ -1,10 +1,11 @@
 "use client"
 
-import type { PlacedTile, Collider, ColliderType, Marker } from "./types"
+import type { PlacedTile, Collider, ColliderType, ColliderTypeDefinition, Marker } from "./types"
 import { LAYER_COUNT } from "./types"
 import { CopyCheck, Trash2, X } from "lucide-react"
 
 interface PropertiesPanelProps {
+  colliderTypes: ColliderTypeDefinition[]
   selectedTiles: PlacedTile[]
   selectedColliders: Collider[]
   selectedMarkers: Marker[]
@@ -17,6 +18,7 @@ interface PropertiesPanelProps {
 }
 
 export function PropertiesPanel({
+  colliderTypes,
   selectedTiles,
   selectedColliders,
   selectedMarkers,
@@ -250,11 +252,7 @@ export function PropertiesPanel({
               }
               className="w-full rounded bg-[#1a1a2e] px-2 py-1.5 text-xs text-[#e0e0e0] outline-none focus:ring-1 focus:ring-[#4a90d9]"
             >
-              <option value="ground">ground</option>
-              <option value="chest">chest</option>
-              <option value="ladder">ladder</option>
-              <option value="door">door</option>
-              <option value="kill">kill</option>
+              {colliderTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
             </select>
           </div>
           <div className="flex gap-2">

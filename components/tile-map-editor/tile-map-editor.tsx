@@ -29,7 +29,7 @@ import { useHistory } from "./use-history"
 import { normalizeBackgroundColor } from "@/lib/utils"
 import { selectMatchingElements, updateSelectedElements } from "./selection"
 import { createSpatialIndex } from "./selection-index"
-import { addElementDefinition, addTileset, createCatalog, createTilemap, deleteTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
+import { addColliderType, addElementDefinition, addTileset, colliderTypeDefinitions, createCatalog, createTilemap, deleteTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, eraseArea, type WorldRect, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
 import { loadImage, loadProjectImages, pickJsonFile, portableProject, saveJson } from "./project-files"
 import { loadAutosave, saveAutosave } from "./autosave"
 
@@ -98,6 +98,7 @@ export function TileMapEditor() {
     return { x: tile.x, y: tile.y, width: crop?.width ?? GRID_SIZE, height: crop?.height ?? GRID_SIZE }
   }), [selectableTiles, catalog])
   const colliders = historyState.colliders
+  const colliderTypes = useMemo(() => colliderTypeDefinitions(project), [project.colliderTypes])
   const markers = historyState.markers
   // Only use references still present in the current history state.
   const selectedTiles = useMemo<PlacedTile[]>(() => {
@@ -250,6 +251,10 @@ export function TileMapEditor() {
     pushProject((current) => eraseTile(current, worldX, worldY, activeLayer, activeTilemap.id))
   }, [activeLayer, activeTilemap.id, pushProject])
 
+  const handleEraseArea = useCallback((area: WorldRect) => {
+    pushProject((current) => eraseArea(current, area, activeLayer, activeTilemap.id))
+  }, [activeLayer, activeTilemap.id, pushProject])
+
   const handleMoveLayerElements = useCallback(
     (sourceLayer: number, targetLayer: number) => {
       if (
@@ -324,6 +329,12 @@ export function TileMapEditor() {
     },
     [tiles, colliders, markers, pushState, canvasSize]
   )
+
+  const handleCreateColliderType = useCallback((label: string, color: string) => {
+    const id = newId("collider-type")
+    pushProject((current) => addColliderType(current, label, color, id))
+    return id
+  }, [pushProject])
 
   const handleDeleteCollider = useCallback(
     (collider: Collider) => {
@@ -691,6 +702,8 @@ export function TileMapEditor() {
           images={images}
           tiles={visibleTiles}
           colliders={colliders}
+          colliderTypes={colliderTypes}
+          onCreateColliderType={handleCreateColliderType}
           markers={markers}
           showMarkers={showMarkers}
           selectedMarkers={selectedMarkers}
@@ -709,6 +722,7 @@ export function TileMapEditor() {
           onCameraChange={setCamera}
           onPlaceTile={handlePlaceTile}
           onEraseTile={handleEraseTile}
+          onEraseArea={handleEraseArea}
           onSelectTile={handleSelectTile}
           onMoveElements={handleMoveElements}
           onSelectCollider={handleSelectCollider}
@@ -744,6 +758,7 @@ export function TileMapEditor() {
             }
           />
           <PropertiesPanel
+            colliderTypes={colliderTypes}
             selectedTiles={selectedTiles}
             selectedColliders={selectedColliders}
             selectedMarkers={selectedMarkers}
