@@ -38,6 +38,21 @@ const legacy = {
   markers: [{ name: "spawn", x: -17, y: 3 }, { name: "spawn", x: 0, y: 0 }],
 }
 
+test("canvas size is validated, saved and remains optional in older project files", () => {
+  const original = portable(defaults())
+  assert.deepEqual(original.scene.canvasSize, { width: 1024, height: 768 })
+  const resized = api.updateCanvasSize(original, { width: 320, height: 240 })
+  assert.deepEqual(resized.scene.canvasSize, { width: 320, height: 240 })
+  assert.deepEqual(api.parseProject(JSON.parse(JSON.stringify(resized))).scene.canvasSize, { width: 320, height: 240 })
+  for (const size of [{ width: 0, height: 10 }, { width: 3.5, height: 10 }, { width: 10, height: 16385 }]) {
+    assert.throws(() => api.updateCanvasSize(original, size))
+    assert.throws(() => api.parseProject({ ...original, scene: { ...original.scene, canvasSize: size } }))
+  }
+  const older = { ...original, scene: { ...original.scene } }
+  delete older.scene.canvasSize
+  assert.deepEqual(api.parseProject(older), older)
+})
+
 test("migrates old maps without losing aliases, positions, overlap order, layers, locks or creationCode", () => {
   const project = api.importLegacy(legacy, defaults())
   const content = api.editorContent(project)

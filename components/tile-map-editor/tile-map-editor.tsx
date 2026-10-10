@@ -13,6 +13,7 @@ import type {
   ImageResource,
   Tileset,
   Camera,
+  CanvasSize,
 } from "./types"
 import { GRID_SIZE, LAYER_COUNT } from "./types"
 import { MenuBar } from "./menu-bar"
@@ -28,7 +29,7 @@ import { useHistory } from "./use-history"
 import { normalizeBackgroundColor } from "@/lib/utils"
 import { selectMatchingElements, updateSelectedElements } from "./selection"
 import { createSpatialIndex } from "./selection-index"
-import { addElementDefinition, addTileset, createCatalog, createTilemap, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
+import { addElementDefinition, addTileset, createCatalog, createTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
 import { loadImage, loadProjectImages, pickJsonFile, portableProject, saveJson } from "./project-files"
 import { loadAutosave, saveAutosave } from "./autosave"
 
@@ -75,6 +76,7 @@ export function TileMapEditor() {
   const activeTilemap = project.tilemaps.find((map) => map.id === activeTilemapId) ?? project.tilemaps[0]
   const catalog = useMemo(() => createCatalog(project), [project.images, project.tilesets, project.elementDefinitions])
   const backgroundColor = project.scene.backgroundColor
+  const canvasSize = project.scene.canvasSize ?? DEFAULT_CANVAS_SIZE
   const pushState = useCallback((content: EditorState) => {
     pushProject(replaceEditorContent(project, content))
   }, [project, pushProject])
@@ -119,6 +121,11 @@ export function TileMapEditor() {
     setColliderSelection([])
     setMarkerSelection([])
   }, [])
+
+  const handleCanvasSizeChange = useCallback((size: CanvasSize) => {
+    pushProject((current) => updateCanvasSize(current, size))
+    clearSelection()
+  }, [pushProject, clearSelection])
 
   const handleUndo = useCallback(() => {
     clearSelection()
@@ -228,10 +235,16 @@ export function TileMapEditor() {
   }, [project, ready])
 
   const handlePlaceTile = useCallback((worldX: number, worldY: number) => {
+    if (worldX < 0 || worldY < 0 || worldX >= canvasSize.width || worldY >= canvasSize.height) return
     const entry = selectedTileId ? catalog.get(selectedTileId) : undefined
     if (!entry) return
+    const alignment = project.scene.objectAlignment ?? DEFAULT_OBJECT_ALIGNMENT
+    const position = entry.resource.kind === "element"
+      ? alignment.enabled ? snapToTilemap(worldX, worldY, alignment) : { x: Math.round(worldX), y: Math.round(worldY) }
+      : snapToTilemap(worldX, worldY, activeTilemap)
+    if (position.x < 0 || position.y < 0 || position.x + entry.crop.width > canvasSize.width || position.y + entry.crop.height > canvasSize.height) return
     pushProject((current) => paintTile(current, entry, worldX, worldY, activeLayer, activeTilemap.id))
-  }, [selectedTileId, catalog, activeLayer, activeTilemap.id, pushProject])
+  }, [selectedTileId, catalog, activeLayer, activeTilemap, pushProject, canvasSize, project.scene.objectAlignment])
 
   const handleEraseTile = useCallback((worldX: number, worldY: number) => {
     pushProject((current) => eraseTile(current, worldX, worldY, activeLayer, activeTilemap.id))
@@ -278,8 +291,13 @@ export function TileMapEditor() {
   )
 
   const handleMoveElements = useCallback((origins: { id: string; x: number; y: number }[], dx: number, dy: number) => {
+    if (origins.some((origin) => {
+      const tile = project.elements.find((element) => element.id === origin.id)
+      const crop = tile && resolveInstance(tile, catalog)?.crop
+      return origin.x + dx < 0 || origin.y + dy < 0 || origin.x + dx + (crop?.width ?? GRID_SIZE) > canvasSize.width || origin.y + dy + (crop?.height ?? GRID_SIZE) > canvasSize.height
+    })) return
     pushProject((current) => moveElements(current, origins, dx, dy))
-  }, [pushProject])
+  }, [pushProject, project.elements, catalog, canvasSize])
 
   const handleSelectCollider = useCallback(
     (worldX: number, worldY: number) => {
@@ -301,9 +319,10 @@ export function TileMapEditor() {
 
   const handleAddCollider = useCallback(
     (collider: Collider) => {
+      if (collider.x < 0 || collider.y < 0 || collider.x + collider.width > canvasSize.width || collider.y + collider.height > canvasSize.height) return
       pushState({ tiles, colliders: [...colliders, collider], markers })
     },
-    [tiles, colliders, markers, pushState]
+    [tiles, colliders, markers, pushState, canvasSize]
   )
 
   const handleDeleteCollider = useCallback(
@@ -334,6 +353,7 @@ export function TileMapEditor() {
       const { x, y } = alignment.enabled
         ? snapToTilemap(worldX, worldY, alignment)
         : { x: Math.round(worldX), y: Math.round(worldY) }
+      if (x < 0 || y < 0 || x >= canvasSize.width || y >= canvasSize.height) return
       let n = markers.length + 1
       while (markers.some((m) => m.name === `marker${n}`)) n++
       const marker: Marker = { name: `marker${n}`, x, y }
@@ -342,7 +362,7 @@ export function TileMapEditor() {
       setTileSelection([])
       setColliderSelection([])
     },
-    [project.scene.annotationAlignment, tiles, colliders, markers, pushState]
+    [project.scene.annotationAlignment, tiles, colliders, markers, pushState, canvasSize]
   )
 
   const handleSelectMarker = useCallback((marker: Marker) => {
@@ -621,6 +641,8 @@ export function TileMapEditor() {
         onShowMarkersChange={setShowMarkers}
         backgroundColor={backgroundColor}
         onBackgroundColorChange={setBackgroundColor}
+        canvasSize={canvasSize}
+        onCanvasSizeChange={handleCanvasSizeChange}
         fileBusy={fileBusy}
         onSaveProject={handleSaveProject}
         onImportMap={handleImportMap}
@@ -675,6 +697,7 @@ export function TileMapEditor() {
           selectedTileId={selectedTileId}
           selectedColliders={selectedColliders}
           backgroundColor={backgroundColor}
+          canvasSize={canvasSize}
           onCameraChange={setCamera}
           onPlaceTile={handlePlaceTile}
           onEraseTile={handleEraseTile}

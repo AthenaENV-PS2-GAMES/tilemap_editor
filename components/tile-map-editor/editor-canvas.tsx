@@ -8,6 +8,7 @@ import type {
   ColliderType,
   Marker,
   Camera,
+  CanvasSize,
   Tilemap,
   ObjectAlignment,
 } from "./types"
@@ -41,6 +42,7 @@ interface EditorCanvasProps {
   selectedTileId: string | null
   selectedColliders: Collider[]
   backgroundColor: string
+  canvasSize: CanvasSize
   onCameraChange: (camera: Camera) => void
   onPlaceTile: (worldX: number, worldY: number) => void
   onEraseTile: (worldX: number, worldY: number) => void
@@ -75,6 +77,7 @@ export function EditorCanvas({
   selectedTileId,
   selectedColliders,
   backgroundColor,
+  canvasSize,
   onCameraChange,
   onPlaceTile,
   onEraseTile,
@@ -138,6 +141,10 @@ export function EditorCanvas({
     [camera]
   )
 
+  const insideCanvas = useCallback((x: number, y: number) =>
+    x >= 0 && y >= 0 && x < canvasSize.width && y < canvasSize.height,
+  [canvasSize])
+
   // Draw function
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -158,13 +165,19 @@ export function EditorCanvas({
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     
-    // Fill with background color
-    ctx.fillStyle = backgroundColor
+    // The editor viewport extends beyond the project's drawing area.
+    ctx.fillStyle = "#11111d"
     ctx.fillRect(0, 0, rect.width, rect.height)
 
     ctx.save()
     ctx.translate(camera.x, camera.y)
     ctx.scale(camera.zoom, camera.zoom)
+    ctx.fillStyle = backgroundColor
+    ctx.fillRect(0, 0, canvasSize.width, canvasSize.height)
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 0, canvasSize.width, canvasSize.height)
+    ctx.clip()
 
     const viewLeft = -camera.x / camera.zoom
     const viewTop = -camera.y / camera.zoom
@@ -346,6 +359,10 @@ export function EditorCanvas({
     }
 
     ctx.restore()
+    ctx.strokeStyle = "#72b6ff"
+    ctx.lineWidth = 2 / camera.zoom
+    ctx.strokeRect(0, 0, canvasSize.width, canvasSize.height)
+    ctx.restore()
   }, [
     camera,
     tilemap,
@@ -363,6 +380,7 @@ export function EditorCanvas({
     colliderEnd,
     colliderType,
     backgroundColor,
+    canvasSize,
   ])
 
   // The editor content is static between state changes; avoid redrawing a large map while idle.
@@ -454,6 +472,8 @@ export function EditorCanvas({
         e.preventDefault()
         return
       }
+
+      if (!insideCanvas(world.x, world.y)) return
 
       const markerAt = () =>
         markers.find(
@@ -547,6 +567,7 @@ export function EditorCanvas({
       onStartBatch,
       selectedTiles,
       annotationAlignment,
+      insideCanvas,
     ]
   )
 
@@ -572,6 +593,7 @@ export function EditorCanvas({
 
       if (elementDragRef.current) {
         const world = screenToWorld(sx, sy)
+        if (!insideCanvas(world.x, world.y)) return
         onMoveElements(elementDragRef.current.origins, world.x - elementDragRef.current.start.x, world.y - elementDragRef.current.start.y)
         return
       }
@@ -579,6 +601,7 @@ export function EditorCanvas({
       if (!isDrawingRef.current) return
 
       const world = screenToWorld(sx, sy)
+      if (!insideCanvas(world.x, world.y)) return
 
       if (activeTool === "place") {
         onPlaceTile(world.x, world.y)
@@ -602,6 +625,7 @@ export function EditorCanvas({
       onMoveElements,
       colliderStart,
       annotationAlignment,
+      insideCanvas,
     ]
   )
 

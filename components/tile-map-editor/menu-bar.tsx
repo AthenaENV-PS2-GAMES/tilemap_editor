@@ -1,6 +1,9 @@
 "use client"
 
-import type { Camera } from "./types"
+import { useState } from "react"
+import type { Camera, CanvasSize } from "./types"
+import { MAX_CANVAS_SIZE } from "./project"
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import {
   Menubar,
   MenubarCheckboxItem,
@@ -23,6 +26,8 @@ interface MenuBarProps {
   onShowMarkersChange: (show: boolean) => void
   backgroundColor: string
   onBackgroundColorChange: (color: string) => void
+  canvasSize: CanvasSize
+  onCanvasSizeChange: (size: CanvasSize) => void
   onImportMap: () => void
   onSaveProject: () => void
   fileBusy: boolean
@@ -52,6 +57,8 @@ export function MenuBar({
   onShowMarkersChange,
   backgroundColor,
   onBackgroundColorChange,
+  canvasSize,
+  onCanvasSizeChange,
   onImportMap,
   onSaveProject,
   fileBusy,
@@ -62,7 +69,27 @@ export function MenuBar({
   onResetView,
   onToggleFullscreen,
 }: MenuBarProps) {
+  const [sizeOpen, setSizeOpen] = useState(false)
+  const [draft, setDraft] = useState({ width: String(canvasSize.width), height: String(canvasSize.height) })
+  const width = Number(draft.width)
+  const height = Number(draft.height)
+  const valid = draft.width.trim() !== "" && draft.height.trim() !== "" &&
+    Number.isSafeInteger(width) && Number.isSafeInteger(height) &&
+    width >= 1 && height >= 1 && width <= MAX_CANVAS_SIZE && height <= MAX_CANVAS_SIZE
+
+  function openSize() {
+    setDraft({ width: String(canvasSize.width), height: String(canvasSize.height) })
+    setSizeOpen(true)
+  }
+
+  function applySize() {
+    if (!valid) return
+    onCanvasSizeChange({ width, height })
+    setSizeOpen(false)
+  }
+
   return (
+    <>
     <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#2a2a4a] bg-[#16213e] px-2">
       <Menubar className="h-auto gap-0 border-0 bg-transparent p-0 shadow-none">
         <MenubarMenu>
@@ -83,6 +110,8 @@ export function MenuBar({
         <MenubarMenu>
           <MenubarTrigger className={triggerClass}>Editar</MenubarTrigger>
           <MenubarContent className={contentClass}>
+            <MenubarItem className={itemClass} onSelect={openSize}>Tamanho do canvas…</MenubarItem>
+            <MenubarSeparator className="bg-[#2a2a4a]" />
             <MenubarItem className={itemClass} disabled={!canUndo} onSelect={onUndo}>
               Desfazer <MenubarShortcut>Ctrl+Z</MenubarShortcut>
             </MenubarItem>
@@ -126,6 +155,7 @@ export function MenuBar({
       </Menubar>
 
       <div className="flex items-center gap-3 text-xs text-[#8888aa]">
+        <button type="button" onClick={openSize} title="Alterar tamanho do canvas" className="hover:text-[#e0e0e0]">{canvasSize.width} × {canvasSize.height} px</button>
         <span>{Math.round(camera.zoom * 100)}%</span>
         <label className="flex cursor-pointer items-center gap-1.5" title="Cor de fundo">
           <span>BG</span>
@@ -144,5 +174,22 @@ export function MenuBar({
         </label>
       </div>
     </div>
+    <Dialog open={sizeOpen} onOpenChange={setSizeOpen}>
+      <DialogContent className="border-[#2a2a4a] bg-[#16213e] text-[#e0e0e0]">
+        <DialogTitle>Tamanho do canvas</DialogTitle>
+        <DialogDescription>Defina a área de desenho em pixels. O canto superior esquerdo fica em 0, 0. O conteúdo existente fora da nova área permanece no projeto.</DialogDescription>
+        <form onSubmit={(event) => { event.preventDefault(); applySize() }} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            {(["width", "height"] as const).map((key) => <label key={key} className="space-y-1 text-xs text-[#aaaacc]">
+              {key === "width" ? "Largura (px)" : "Altura (px)"}
+              <input type="number" min="1" max={MAX_CANVAS_SIZE} step="1" value={draft[key]} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded bg-[#1a1a2e] px-2 py-2 text-sm text-[#e0e0e0] outline-none focus:ring-1 focus:ring-[#4a90d9]" />
+            </label>)}
+          </div>
+          {!valid && <p role="alert" className="text-xs text-amber-300">Use valores inteiros entre 1 e {MAX_CANVAS_SIZE} pixels.</p>}
+          <button type="submit" disabled={!valid} className="rounded bg-[#4a90d9] px-3 py-1.5 text-xs text-white disabled:opacity-40">Aplicar tamanho</button>
+        </form>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

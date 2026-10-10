@@ -1,4 +1,4 @@
-import type { Crop, ElementResource, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectInstance, ResourceReference, TextureAtlas, Tilemap, Tileset } from "./types"
+import type { CanvasSize, Crop, ElementResource, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectInstance, ResourceReference, TextureAtlas, Tilemap, Tileset } from "./types"
 import { GRID_SIZE, defaultLayerFor, normalizeLayer, normalizeTileId } from "./types"
 import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./default-elements"
 import { createAssetResolver } from "./asset-resolver"
@@ -6,6 +6,8 @@ import { createAssetResolver } from "./asset-resolver"
 export const DEFAULT_TILEMAP_ID = "tilemap:default"
 export const DEFAULT_TILESET_ID = "tileset:default"
 export const DEFAULT_OBJECT_ALIGNMENT: ObjectAlignment = { enabled: true, cellWidth: GRID_SIZE, cellHeight: GRID_SIZE, origin: { x: 0, y: 0 } }
+export const DEFAULT_CANVAS_SIZE: CanvasSize = { width: 1024, height: 768 }
+export const MAX_CANVAS_SIZE = 16384
 
 export function newId(prefix: string) {
   return `${prefix}:${crypto.randomUUID()}`
@@ -15,12 +17,24 @@ export function emptyProject(): ProjectDocument {
   return {
     format: "tilemap-editor", version: 1, images: [], tilesets: [], elementDefinitions: [],
     tilemaps: [{ id: DEFAULT_TILEMAP_ID, name: "TileMap", visible: true, layer: 0, cellWidth: GRID_SIZE, cellHeight: GRID_SIZE, origin: { x: 0, y: 0 }, tiles: [] }],
-    elements: [], colliders: [], markers: [], scene: { backgroundColor: "#1a1a2e", objectAlignment: DEFAULT_OBJECT_ALIGNMENT, annotationAlignment: { ...DEFAULT_OBJECT_ALIGNMENT, origin: { ...DEFAULT_OBJECT_ALIGNMENT.origin } } },
+    elements: [], colliders: [], markers: [], scene: { backgroundColor: "#1a1a2e", canvasSize: { ...DEFAULT_CANVAS_SIZE }, objectAlignment: DEFAULT_OBJECT_ALIGNMENT, annotationAlignment: { ...DEFAULT_OBJECT_ALIGNMENT, origin: { ...DEFAULT_OBJECT_ALIGNMENT.origin } } },
   }
 }
 
 function positiveInteger(n: unknown): n is number {
   return typeof n === "number" && Number.isSafeInteger(n) && n > 0
+}
+
+export function validateCanvasSize(size: CanvasSize) {
+  if (!positiveInteger(size.width) || !positiveInteger(size.height) ||
+      size.width > MAX_CANVAS_SIZE || size.height > MAX_CANVAS_SIZE) {
+    throw new Error(`A largura e a altura do canvas devem ser inteiros entre 1 e ${MAX_CANVAS_SIZE} pixels.`)
+  }
+}
+
+export function updateCanvasSize(project: ProjectDocument, size: CanvasSize): ProjectDocument {
+  validateCanvasSize(size)
+  return { ...project, scene: { ...project.scene, canvasSize: { ...size } } }
 }
 
 function nonnegativeInteger(n: unknown): n is number {
@@ -391,6 +405,7 @@ export function parseProject(data: unknown): ProjectDocument {
   const project = json as unknown as ProjectDocument
   const scene = record(project.scene, "Cenário")
   if (typeof scene.backgroundColor !== "string" || !/^#[0-9a-f]{6}$/i.test(scene.backgroundColor)) throw new Error("Cor de fundo inválida.")
+  if (scene.canvasSize !== undefined) validateCanvasSize(record(scene.canvasSize, "Tamanho do canvas") as unknown as CanvasSize)
   if (scene.objectAlignment !== undefined) validateObjectAlignment(record(scene.objectAlignment, "Alinhamento de objetos") as unknown as ObjectAlignment)
   if (scene.annotationAlignment !== undefined) validateObjectAlignment(record(scene.annotationAlignment, "Alinhamento de marcadores") as unknown as ObjectAlignment)
   function uniqueIds(items: unknown[], label: string) {

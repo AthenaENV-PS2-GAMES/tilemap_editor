@@ -98,6 +98,11 @@ export interface ObjectAlignment {
   origin: { x: number; y: number }
 }
 
+export interface CanvasSize {
+  width: number
+  height: number
+}
+
 export interface ProjectDocument {
   format: "tilemap-editor"
   version: 1
@@ -108,7 +113,7 @@ export interface ProjectDocument {
   elements: ProjectInstance[]
   colliders: Collider[]
   markers: Marker[]
-  scene: { backgroundColor: string; objectAlignment?: ObjectAlignment; annotationAlignment?: ObjectAlignment }
+  scene: { backgroundColor: string; canvasSize?: CanvasSize; objectAlignment?: ObjectAlignment; annotationAlignment?: ObjectAlignment }
 }
 
 export interface Marker {
