@@ -1,6 +1,6 @@
 import type { AtlasFrame, EntityDefinition, TextureAtlas } from "./types"
 import { GRID_SIZE } from "./types"
-import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./tile-palette"
+import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./default-elements"
 import { createAssetResolver } from "./asset-resolver"
 
 const resolveEntity = createAssetResolver<EntityDefinition>(

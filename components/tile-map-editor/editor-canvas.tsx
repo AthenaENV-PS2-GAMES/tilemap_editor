@@ -7,8 +7,9 @@ import type {
   Collider,
   ColliderType,
   Marker,
-  TextureAtlas,
   Camera,
+  Tilemap,
+  ObjectAlignment,
 } from "./types"
 import {
   GRID_SIZE,
@@ -17,33 +18,16 @@ import {
   COLLIDER_COLORS,
   COLLIDER_BORDER_COLORS,
 } from "./types"
-import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./tile-palette"
-import type { EntityDefinition } from "./types"
-import { createAssetResolver } from "./asset-resolver"
-import { getTileSize } from "./tile-size"
-
-// Build maps of entity id -> entity definition and image src for quick lookup
-const ENTITY_MAP: Record<string, EntityDefinition> = {}
-const ENTITY_IMAGE_MAP: Record<string, string> = {}
-
-for (const obj of OBJECTS) {
-  ENTITY_MAP[obj.id] = obj
-  ENTITY_IMAGE_MAP[obj.id] = obj.imageSrc
-}
-for (const enemy of ENEMIES) {
-  ENTITY_MAP[enemy.id] = enemy
-  ENTITY_IMAGE_MAP[enemy.id] = enemy.imageSrc
-}
-for (const player of PLAYER_SPAWN) {
-  ENTITY_MAP[player.id] = player
-  ENTITY_IMAGE_MAP[player.id] = player.imageSrc
-}
-
-const resolveEntity = createAssetResolver(ENTITY_MAP)
+import { snapToTilemap } from "./project"
+import { compareDisplayOrder, resolveInstance } from "./project"
+import type { CatalogEntry } from "./project"
 
 interface EditorCanvasProps {
-  atlas: TextureAtlas | null
-  spritesheet: HTMLImageElement | null
+  tilemap: Tilemap
+  tilemaps: Tilemap[]
+  annotationAlignment: ObjectAlignment
+  catalog: Map<string, CatalogEntry>
+  images: Map<string, HTMLImageElement>
   tiles: PlacedTile[]
   colliders: Collider[]
   markers: Marker[]
@@ -60,7 +44,8 @@ interface EditorCanvasProps {
   onCameraChange: (camera: Camera) => void
   onPlaceTile: (worldX: number, worldY: number) => void
   onEraseTile: (worldX: number, worldY: number) => void
-  onSelectTile: (worldX: number, worldY: number) => void
+  onSelectTile: (worldX: number, worldY: number) => PlacedTile | null
+  onMoveElements: (origins: { id: string; x: number; y: number }[], dx: number, dy: number) => void
   onSelectCollider: (worldX: number, worldY: number) => void
   onAddCollider: (collider: Collider) => void
   onDeleteCollider: (collider: Collider) => void
@@ -72,8 +57,11 @@ interface EditorCanvasProps {
 }
 
 export function EditorCanvas({
-  atlas,
-  spritesheet,
+  tilemap,
+  tilemaps,
+  annotationAlignment,
+  catalog,
+  images,
   tiles,
   colliders: allColliders,
   markers: allMarkers,
@@ -91,6 +79,7 @@ export function EditorCanvas({
   onPlaceTile,
   onEraseTile,
   onSelectTile,
+  onMoveElements,
   onSelectCollider,
   onAddCollider,
   onDeleteCollider,
@@ -100,10 +89,6 @@ export function EditorCanvas({
   onStartBatch,
   onEndBatch,
 }: EditorCanvasProps) {
-  const resolveAtlasFrame = useMemo(
-    () => createAssetResolver(atlas?.frames ?? {}),
-    [atlas]
-  )
   // Hidden markers and colliders are neither drawn nor hit-tested
   const markers = useMemo(
     () => (showMarkers ? allMarkers : []),
@@ -117,35 +102,13 @@ export function EditorCanvas({
   const containerRef = useRef<HTMLDivElement>(null)
   const isPanningRef = useRef(false)
   const isDrawingRef = useRef(false)
+  const elementDragRef = useRef<{ start: { x: number; y: number }; origins: { id: string; x: number; y: number }[] } | null>(null)
   const lastMouseRef = useRef({ x: 0, y: 0 })
   const spaceHeldRef = useRef(false)
   const animRef = useRef<number>(0)
-  const entityImagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
-  const [entityImagesLoaded, setEntityImagesLoaded] = useState(0)
-
   // Keep camera in a ref for event handlers
   const cameraRef = useRef(camera)
   cameraRef.current = camera
-
-  // Load entity images (objects and enemies)
-  useEffect(() => {
-    for (const [id, src] of Object.entries(ENTITY_IMAGE_MAP)) {
-      if (!entityImagesRef.current.has(id)) {
-        const img = new Image()
-        img.crossOrigin = "anonymous"
-        img.src = src
-        img.onload = () => {
-
-          entityImagesRef.current.set(id, img)
-          // Force re-render when image loads
-          setEntityImagesLoaded((prev) => prev + 1)
-        }
-        img.onerror = () => {
-          entityImagesRef.current.delete(id)
-        }
-      }
-    }
-  }, [])
 
   // Collider drawing state
   const [colliderStart, setColliderStart] = useState<{
@@ -203,26 +166,31 @@ export function EditorCanvas({
     ctx.translate(camera.x, camera.y)
     ctx.scale(camera.zoom, camera.zoom)
 
+    const viewLeft = -camera.x / camera.zoom
+    const viewTop = -camera.y / camera.zoom
+    const viewRight = viewLeft + rect.width / camera.zoom
+    const viewBottom = viewTop + rect.height / camera.zoom
+
     // Grid
-    const startX =
-      Math.floor(-camera.x / camera.zoom / GRID_SIZE) * GRID_SIZE
-    const startY =
-      Math.floor(-camera.y / camera.zoom / GRID_SIZE) * GRID_SIZE
+    const startX = tilemap.origin.x +
+      Math.floor((-camera.x / camera.zoom - tilemap.origin.x) / tilemap.cellWidth) * tilemap.cellWidth
+    const startY = tilemap.origin.y +
+      Math.floor((-camera.y / camera.zoom - tilemap.origin.y) / tilemap.cellHeight) * tilemap.cellHeight
     const endX =
       startX +
-      Math.ceil(rect.width / camera.zoom / GRID_SIZE + 2) * GRID_SIZE
+      Math.ceil(rect.width / camera.zoom / tilemap.cellWidth + 2) * tilemap.cellWidth
     const endY =
       startY +
-      Math.ceil(rect.height / camera.zoom / GRID_SIZE + 2) * GRID_SIZE
+      Math.ceil(rect.height / camera.zoom / tilemap.cellHeight + 2) * tilemap.cellHeight
 
     ctx.strokeStyle = "rgba(255,255,255,0.06)"
     ctx.lineWidth = 1 / camera.zoom
     ctx.beginPath()
-    for (let x = startX; x <= endX; x += GRID_SIZE) {
+    for (let x = startX; x <= endX; x += tilemap.cellWidth) {
       ctx.moveTo(x, startY)
       ctx.lineTo(x, endY)
     }
-    for (let y = startY; y <= endY; y += GRID_SIZE) {
+    for (let y = startY; y <= endY; y += tilemap.cellHeight) {
       ctx.moveTo(startX, y)
       ctx.lineTo(endX, y)
     }
@@ -232,45 +200,37 @@ export function EditorCanvas({
     ctx.strokeStyle = "rgba(255,255,255,0.15)"
     ctx.lineWidth = 2 / camera.zoom
     ctx.beginPath()
-    ctx.moveTo(0, startY)
-    ctx.lineTo(0, endY)
-    ctx.moveTo(startX, 0)
-    ctx.lineTo(endX, 0)
+    ctx.moveTo(tilemap.origin.x, startY)
+    ctx.lineTo(tilemap.origin.x, endY)
+    ctx.moveTo(startX, tilemap.origin.y)
+    ctx.lineTo(endX, tilemap.origin.y)
     ctx.stroke()
 
     // Tiles, Objects, and Enemies
     ctx.imageSmoothingEnabled = false
     
     // Draw in layer order (stable sort keeps insertion order within a layer)
+    const mapLayers = new Map(tilemaps.map((map) => [map.id, map.layer ?? 0]))
     const orderedTiles = tiles
-      .filter((t) => !hiddenLayers.includes(t.layer ?? 0))
-      .sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0))
+      .filter((tile) => {
+        if (hiddenLayers.includes(tile.layer ?? 0)) return false
+        const crop = resolveInstance(tile, catalog)?.crop
+        return tile.x < viewRight && tile.x + (crop?.width ?? GRID_SIZE) > viewLeft &&
+          tile.y < viewBottom && tile.y + (crop?.height ?? GRID_SIZE) > viewTop
+      })
+      .sort((a, b) => compareDisplayOrder(a, b, mapLayers))
 
     for (const tile of orderedTiles) {
-      // Check if it's an entity (object or enemy)
-      const entityDef = resolveEntity(tile.tileId)
-      if (entityDef) {
-        const entityImg = entityImagesRef.current.get(entityDef.id)
-        // Wait for the matched entity's image to load.
-        if (!entityImg) continue
-        // For spritesheets, only draw the first frame
-        const frameWidth = entityDef.frameWidth || entityDef.width
-        const frameHeight = entityDef.height
-        ctx.drawImage(
-          entityImg,
-          0, 0, frameWidth, frameHeight, // Source: first frame only
-          tile.x, tile.y, frameWidth, frameHeight // Destination
-        )
+      const entry = resolveInstance(tile, catalog)
+      const image = entry && images.get(entry.imageId)
+      if (!entry || !image) {
+        // Unknown legacy assets stay editable and visible as placeholders.
+        ctx.strokeStyle = "#f59e0b"
+        ctx.strokeRect(tile.x, tile.y, GRID_SIZE, GRID_SIZE)
         continue
       }
-      
-      // Otherwise try to get from atlas
-      if (atlas && spritesheet) {
-        const frameData = resolveAtlasFrame(tile.tileId)
-        if (!frameData) continue
-        const { x, y, w, h } = frameData.frame
-        ctx.drawImage(spritesheet, x, y, w, h, tile.x, tile.y, w, h)
-      }
+      const crop = entry.crop
+      ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, tile.x, tile.y, crop.width, crop.height)
     }
 
     // Highlight each visible selected sprite at its actual size.
@@ -279,7 +239,10 @@ export function EditorCanvas({
     ctx.lineWidth = 2 / camera.zoom
     for (const tile of selectedTiles) {
       if (hiddenLayers.includes(tile.layer ?? 0)) continue
-      const { width, height } = getTileSize(tile.tileId, atlas)
+      const crop = resolveInstance(tile, catalog)?.crop
+      const width = crop?.width ?? GRID_SIZE
+      const height = crop?.height ?? GRID_SIZE
+      if (tile.x >= viewRight || tile.x + width <= viewLeft || tile.y >= viewBottom || tile.y + height <= viewTop) continue
       ctx.fillRect(tile.x, tile.y, width, height)
       ctx.strokeRect(tile.x, tile.y, width, height)
     }
@@ -289,6 +252,7 @@ export function EditorCanvas({
 
     // Colliders
     for (const collider of colliders) {
+      if (collider.x >= viewRight || collider.x + collider.width <= viewLeft || collider.y >= viewBottom || collider.y + collider.height <= viewTop) continue
       const color = COLLIDER_COLORS[collider.type] || COLLIDER_COLORS.ground
       const borderColor =
         COLLIDER_BORDER_COLORS[collider.type] ||
@@ -340,6 +304,7 @@ export function EditorCanvas({
 
     // Markers (drawn without the atlas)
     for (const marker of markers) {
+      if (marker.x >= viewRight + 32 || marker.x + GRID_SIZE <= viewLeft - 32 || marker.y >= viewBottom + 32 || marker.y + GRID_SIZE <= viewTop - 32) continue
       const cx = marker.x + GRID_SIZE / 2
       const cy = marker.y + GRID_SIZE / 2
       const r = GRID_SIZE / 2
@@ -383,9 +348,10 @@ export function EditorCanvas({
     ctx.restore()
   }, [
     camera,
-    atlas,
-    resolveAtlasFrame,
-    spritesheet,
+    tilemap,
+    tilemaps,
+    catalog,
+    images,
     tiles,
     colliders,
     markers,
@@ -397,22 +363,12 @@ export function EditorCanvas({
     colliderEnd,
     colliderType,
     backgroundColor,
-    entityImagesLoaded,
   ])
 
-  // Animation loop
+  // The editor content is static between state changes; avoid redrawing a large map while idle.
   useEffect(() => {
-    let running = true
-    const loop = () => {
-      if (!running) return
-      draw()
-      animRef.current = requestAnimationFrame(loop)
-    }
-    animRef.current = requestAnimationFrame(loop)
-    return () => {
-      running = false
-      cancelAnimationFrame(animRef.current)
-    }
+    animRef.current = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(animRef.current)
   }, [draw])
 
   // Resize observer
@@ -478,8 +434,8 @@ export function EditorCanvas({
     return () => canvas.removeEventListener("wheel", handleWheel)
   }, [onCameraChange])
 
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current
       if (!canvas) return
       const rect = canvas.getBoundingClientRect()
@@ -488,6 +444,10 @@ export function EditorCanvas({
       const world = screenToWorld(sx, sy)
 
       lastMouseRef.current = { x: e.clientX, y: e.clientY }
+
+      if (e.button === 0 || e.button === 1) {
+        if (e.nativeEvent.isTrusted) e.currentTarget.setPointerCapture(e.pointerId)
+      }
 
       if (e.button === 1 || (e.button === 0 && spaceHeldRef.current) || (e.button === 0 && activeTool === "drag")) {
         isPanningRef.current = true
@@ -551,14 +511,22 @@ export function EditorCanvas({
         if (foundCollider) {
           onSelectCollider(world.x, world.y)
         } else {
-          onSelectTile(world.x, world.y)
+          const found = onSelectTile(world.x, world.y)
+          if (found?.resource?.kind === "element") {
+            const group = selectedTiles.includes(found)
+              ? selectedTiles.filter((tile) => tile.resource?.kind === "element")
+              : [found]
+            if (group.length && group.every((tile) => !tile.locked && tile.id)) {
+              elementDragRef.current = { start: world, origins: group.map((tile) => ({ id: tile.id!, x: tile.x, y: tile.y })) }
+              onStartBatch?.()
+            }
+          }
         }
       } else if (activeTool === "collider") {
         if (showColliderPopup) return
-        const snappedX = Math.floor(world.x / GRID_SIZE) * GRID_SIZE
-        const snappedY = Math.floor(world.y / GRID_SIZE) * GRID_SIZE
-        setColliderStart({ x: snappedX, y: snappedY })
-        setColliderEnd({ x: snappedX, y: snappedY })
+        const snapped = annotationAlignment.enabled ? snapToTilemap(world.x, world.y, annotationAlignment) : { x: Math.round(world.x), y: Math.round(world.y) }
+        setColliderStart(snapped)
+        setColliderEnd(snapped)
         isDrawingRef.current = true
       }
     },
@@ -577,11 +545,13 @@ export function EditorCanvas({
       colliders,
       showColliderPopup,
       onStartBatch,
+      selectedTiles,
+      annotationAlignment,
     ]
   )
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
       const canvas = canvasRef.current
       if (!canvas) return
       const rect = canvas.getBoundingClientRect()
@@ -600,6 +570,12 @@ export function EditorCanvas({
         return
       }
 
+      if (elementDragRef.current) {
+        const world = screenToWorld(sx, sy)
+        onMoveElements(elementDragRef.current.origins, world.x - elementDragRef.current.start.x, world.y - elementDragRef.current.start.y)
+        return
+      }
+
       if (!isDrawingRef.current) return
 
       const world = screenToWorld(sx, sy)
@@ -609,9 +585,11 @@ export function EditorCanvas({
       } else if (activeTool === "erase") {
         onEraseTile(world.x, world.y)
       } else if (activeTool === "collider" && colliderStart) {
-        const snappedX = Math.round(world.x / GRID_SIZE) * GRID_SIZE
-        const snappedY = Math.round(world.y / GRID_SIZE) * GRID_SIZE
-        setColliderEnd({ x: snappedX, y: snappedY })
+        const snapped = annotationAlignment.enabled ? {
+          x: annotationAlignment.origin.x + Math.round((world.x - annotationAlignment.origin.x) / annotationAlignment.cellWidth) * annotationAlignment.cellWidth,
+          y: annotationAlignment.origin.y + Math.round((world.y - annotationAlignment.origin.y) / annotationAlignment.cellHeight) * annotationAlignment.cellHeight,
+        } : { x: Math.round(world.x), y: Math.round(world.y) }
+        setColliderEnd(snapped)
       }
     },
     [
@@ -621,12 +599,19 @@ export function EditorCanvas({
       onCameraChange,
       onPlaceTile,
       onEraseTile,
+      onMoveElements,
       colliderStart,
+      annotationAlignment,
     ]
   )
 
-  const handleMouseUp = useCallback(() => {
+  const handlePointerUp = useCallback(() => {
     isPanningRef.current = false
+
+    if (elementDragRef.current) {
+      elementDragRef.current = null
+      onEndBatch?.()
+    }
 
     // End batch for place/erase operations
     if (isDrawingRef.current && (activeTool === "place" || activeTool === "erase")) {
@@ -644,7 +629,7 @@ export function EditorCanvas({
       const width = Math.abs(colliderEnd.x - colliderStart.x)
       const height = Math.abs(colliderEnd.y - colliderStart.y)
 
-      if (width >= GRID_SIZE && height >= GRID_SIZE) {
+      if (width >= (annotationAlignment.enabled ? annotationAlignment.cellWidth : 1) && height >= (annotationAlignment.enabled ? annotationAlignment.cellHeight : 1)) {
         setPendingCollider({ x, y, width, height })
         setShowColliderPopup(true)
       }
@@ -654,7 +639,7 @@ export function EditorCanvas({
     }
 
     isDrawingRef.current = false
-  }, [activeTool, colliderStart, colliderEnd, onEndBatch])
+  }, [activeTool, colliderStart, colliderEnd, annotationAlignment, onEndBatch])
 
   const confirmCollider = useCallback(() => {
     if (pendingCollider) {
@@ -672,6 +657,7 @@ export function EditorCanvas({
   const getCursor = () => {
     if (isPanningRef.current) return "grabbing"
     if (spaceHeldRef.current || activeTool === "drag") return "grab"
+    if (elementDragRef.current) return "grabbing"
     if (activeTool === "select") return "default"
     return "crosshair"
   }
@@ -681,11 +667,12 @@ export function EditorCanvas({
       <canvas
         ref={canvasRef}
         className="h-full w-full"
-        style={{ cursor: getCursor() }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        style={{ cursor: getCursor(), touchAction: "none" }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onLostPointerCapture={handlePointerUp}
         onContextMenu={(e) => e.preventDefault()}
       />
 

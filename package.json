@@ -7,6 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node components/tile-map-editor/selection.test.cjs && node components/tile-map-editor/project.test.cjs",
+    "typecheck": "tsc --noEmit --incremental false",
     "lint": "eslint ."
   },
   "dependencies": {

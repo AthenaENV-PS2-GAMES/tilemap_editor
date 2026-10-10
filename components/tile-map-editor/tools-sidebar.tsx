@@ -9,7 +9,7 @@ interface ToolsSidebarProps {
 }
 
 const tools: { id: Tool; label: string; icon: React.ReactNode; key: string }[] = [
-  { id: "drag", label: "Arrastar", icon: <Hand className="h-4 w-4" />, key: "D" },
+  { id: "drag", label: "Mover câmera", icon: <Hand className="h-4 w-4" />, key: "D" },
   { id: "place", label: "Pintar", icon: <Pencil className="h-4 w-4" />, key: "P" },
   { id: "erase", label: "Apagar", icon: <Eraser className="h-4 w-4" />, key: "E" },
   { id: "select", label: "Selecionar", icon: <MousePointer className="h-4 w-4" />, key: "S" },

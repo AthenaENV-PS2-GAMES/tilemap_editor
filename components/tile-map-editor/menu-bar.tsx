@@ -24,6 +24,8 @@ interface MenuBarProps {
   backgroundColor: string
   onBackgroundColorChange: (color: string) => void
   onImportMap: () => void
+  onSaveProject: () => void
+  fileBusy: boolean
   onExport: () => void
   onUndo: () => void
   onRedo: () => void
@@ -51,6 +53,8 @@ export function MenuBar({
   backgroundColor,
   onBackgroundColorChange,
   onImportMap,
+  onSaveProject,
+  fileBusy,
   onExport,
   onUndo,
   onRedo,
@@ -64,11 +68,14 @@ export function MenuBar({
         <MenubarMenu>
           <MenubarTrigger className={triggerClass}>Arquivo</MenubarTrigger>
           <MenubarContent className={contentClass}>
-            <MenubarItem className={itemClass} onSelect={onImportMap}>
-              Importar JSON…
+            <MenubarItem className={itemClass} disabled={fileBusy} onSelect={onImportMap}>
+              Abrir projeto / mapa antigo…
+            </MenubarItem>
+            <MenubarItem className={itemClass} disabled={fileBusy} onSelect={onSaveProject}>
+              Salvar projeto (com imagens)
             </MenubarItem>
             <MenubarItem className={itemClass} onSelect={onExport}>
-              Exportar JSON
+              Exportar mapa antigo
             </MenubarItem>
           </MenubarContent>
         </MenubarMenu>

@@ -14,12 +14,101 @@ export interface EntityDefinition {
 }
 
 export interface PlacedTile {
+  id?: string
+  resource?: ResourceReference
+  tilemapId?: string
+  order?: number
   tileId: string
   x: number
   y: number
   locked?: boolean
   layer?: number
   creationCode?: string | null
+}
+
+export type ResourceReference =
+  | { kind: "tile"; tilesetId: string; cropId: string }
+  | { kind: "element"; definitionId: string }
+  | { kind: "missing"; legacyId: string }
+
+export interface ImageResource {
+  id: string
+  name: string
+  src: string
+  width: number
+  height: number
+}
+
+export interface Crop {
+  id: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface GridConfig {
+  width: number
+  height: number
+  margin: number
+  spacing: number
+}
+
+export interface Tileset {
+  id: string
+  name: string
+  imageId: string
+  mode: "grid" | "atlas"
+  grid?: GridConfig
+  crops: Crop[]
+  legacy?: boolean
+}
+
+export interface ElementResource {
+  id: string
+  name: string
+  category: "Objetos" | "Inimigos" | "Player" | "Decoração"
+  imageId: string
+  crop: Crop
+  legacyId?: string
+}
+
+export interface ProjectInstance extends PlacedTile {
+  id: string
+  resource: ResourceReference
+  order: number
+}
+
+export interface Tilemap {
+  id: string
+  name: string
+  visible: boolean
+  layer?: number
+  cellWidth: number
+  cellHeight: number
+  origin: { x: number; y: number }
+  tiles: ProjectInstance[]
+}
+
+export interface ObjectAlignment {
+  enabled: boolean
+  cellWidth: number
+  cellHeight: number
+  origin: { x: number; y: number }
+}
+
+export interface ProjectDocument {
+  format: "tilemap-editor"
+  version: 1
+  images: ImageResource[]
+  tilesets: Tileset[]
+  elementDefinitions: ElementResource[]
+  tilemaps: Tilemap[]
+  elements: ProjectInstance[]
+  colliders: Collider[]
+  markers: Marker[]
+  scene: { backgroundColor: string; objectAlignment?: ObjectAlignment; annotationAlignment?: ObjectAlignment }
 }
 
 export interface Marker {

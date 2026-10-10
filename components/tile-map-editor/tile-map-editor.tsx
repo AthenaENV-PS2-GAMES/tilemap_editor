@@ -7,27 +7,41 @@ import type {
   Collider,
   Marker,
   TextureAtlas,
+  ProjectDocument,
+  ObjectAlignment,
+  ElementResource,
+  ImageResource,
+  Tileset,
   Camera,
 } from "./types"
-import { GRID_SIZE, LAYER_COUNT, defaultLayerFor, isEntityId, normalizeLayer, normalizeTileId } from "./types"
+import { GRID_SIZE, LAYER_COUNT } from "./types"
 import { MenuBar } from "./menu-bar"
 import { ToolsSidebar } from "./tools-sidebar"
 import { LayersPanel } from "./layers-panel"
+import { TilemapsPanel } from "./tilemaps-panel"
+import { ObjectAlignmentPanel } from "./object-alignment-panel"
 import { TilePalette } from "./tile-palette"
 import { EditorCanvas } from "./editor-canvas"
 import { PropertiesPanel } from "./properties-panel"
+import type { EditorState } from "./use-history"
 import { useHistory } from "./use-history"
 import { normalizeBackgroundColor } from "@/lib/utils"
 import { selectMatchingElements, updateSelectedElements } from "./selection"
-import { getTileSize } from "./tile-size"
+import { createSpatialIndex } from "./selection-index"
+import { addElementDefinition, addTileset, createCatalog, createTilemap, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
+import { loadImage, loadProjectImages, pickJsonFile, portableProject, saveJson } from "./project-files"
+import { loadAutosave, saveAutosave } from "./autosave"
 
 // Default atlas and spritesheet paths
 const DEFAULT_ATLAS_URL = "/atlas/texture.json"
 const DEFAULT_SPRITESHEET_URL = "/atlas/texture.png"
 
 export function TileMapEditor() {
-  const [atlas, setAtlas] = useState<TextureAtlas | null>(null)
-  const [spritesheet, setSpritesheet] = useState<HTMLImageElement | null>(null)
+  const [ready, setReady] = useState(false)
+  const [images, setImages] = useState<Map<string, HTMLImageElement>>(new Map())
+  const defaultsRef = useRef<ProjectDocument | null>(null)
+  const [fileBusy, setFileBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
   const [activeTool, setActiveTool] = useState<Tool>("place")
   const [selectedTileId, setSelectedTileId] = useState<string | null>(null)
   const [tileSelection, setTileSelection] = useState<PlacedTile[]>([])
@@ -36,10 +50,10 @@ export function TileMapEditor() {
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 })
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [backgroundColor, setBackgroundColor] = useState("#1a1a2e")
   const [showColliders, setShowColliders] = useState(true)
   const [showMarkers, setShowMarkers] = useState(true)
   const [activeLayer, setActiveLayer] = useState(0)
+  const [activeTilemapId, setActiveTilemapId] = useState("tilemap:default")
   const [hiddenLayers, setHiddenLayers] = useState<number[]>([])
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -47,8 +61,8 @@ export function TileMapEditor() {
 
   // History management
   const {
-    state: historyState,
-    pushState,
+    state: project,
+    pushState: pushProject,
     startBatch,
     endBatch,
     undo,
@@ -56,16 +70,37 @@ export function TileMapEditor() {
     canUndo,
     canRedo,
     reset: resetHistory,
-  } = useHistory({ tiles: [], colliders: [], markers: [] })
+  } = useHistory(emptyProject())
+  const historyState = useMemo(() => editorContent(project), [project])
+  const activeTilemap = project.tilemaps.find((map) => map.id === activeTilemapId) ?? project.tilemaps[0]
+  const catalog = useMemo(() => createCatalog(project), [project.images, project.tilesets, project.elementDefinitions])
+  const backgroundColor = project.scene.backgroundColor
+  const pushState = useCallback((content: EditorState) => {
+    pushProject(replaceEditorContent(project, content))
+  }, [project, pushProject])
+  const setBackgroundColor = useCallback((color: string) => {
+    pushProject({ ...project, scene: { ...project.scene, backgroundColor: normalizeBackgroundColor(color) } })
+  }, [project, pushProject])
 
   // Derive tiles and colliders from history state
   const tiles = historyState.tiles
+  const visibleTiles = useMemo(() => {
+    const visibleMaps = new Set(project.tilemaps.filter((map) => map.visible).map((map) => map.id))
+    return tiles.filter((tile) => tile.resource.kind === "element" || (tile.tilemapId !== undefined && visibleMaps.has(tile.tilemapId)))
+  }, [tiles, project.tilemaps])
+  const selectableTiles = useMemo(() => visibleTiles.filter((tile) =>
+    tile.resource.kind === "element" || tile.tilemapId === activeTilemap.id
+  ), [visibleTiles, activeTilemap.id])
+  const hitTestTiles = useMemo(() => createSpatialIndex(selectableTiles, (tile) => {
+    const crop = resolveInstance(tile, catalog)?.crop
+    return { x: tile.x, y: tile.y, width: crop?.width ?? GRID_SIZE, height: crop?.height ?? GRID_SIZE }
+  }), [selectableTiles, catalog])
   const colliders = historyState.colliders
   const markers = historyState.markers
   // Only use references still present in the current history state.
-  const selectedTiles = useMemo(() => {
-    const current = new Set(tiles)
-    return tileSelection.filter((tile) => current.has(tile))
+  const selectedTiles = useMemo<PlacedTile[]>(() => {
+    const current = new Map<string, PlacedTile>(tiles.map((tile) => [tile.id, tile]))
+    return tileSelection.map((tile) => tile.id ? current.get(tile.id) : undefined).filter((tile): tile is PlacedTile => !!tile)
   }, [tiles, tileSelection])
   const selectedColliders = useMemo(() => {
     const current = new Set(colliders)
@@ -98,13 +133,13 @@ export function TileMapEditor() {
   const handleSelectMatching = useCallback(() => {
     setActiveTool("select")
     if (selectedPlacedTile) {
-      setTileSelection(selectMatchingElements(tiles, selectedPlacedTile, "tileId"))
+      setTileSelection(selectMatchingElements(selectableTiles, selectedPlacedTile, "tileId"))
     } else if (selectedCollider) {
       setColliderSelection(selectMatchingElements(colliders, selectedCollider, "type"))
     } else if (selectedMarker) {
       setMarkerSelection(selectMatchingElements(markers, selectedMarker, "name"))
     }
-  }, [tiles, colliders, markers, selectedPlacedTile, selectedCollider, selectedMarker])
+  }, [selectableTiles, colliders, markers, selectedPlacedTile, selectedCollider, selectedMarker])
 
   const handleDeleteSelection = useCallback(() => {
     if (!selectedTiles.length && !selectedColliders.length && !selectedMarkers.length) return
@@ -129,21 +164,39 @@ export function TileMapEditor() {
         if (!atlasRes.ok) throw new Error("Failed to load atlas")
         const loadedAtlas: TextureAtlas = await atlasRes.json()
 
-        const img = new window.Image()
-        img.crossOrigin = "anonymous"
-        await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve()
-          img.onerror = () => reject(new Error("Failed to load spritesheet"))
-          img.src = DEFAULT_SPRITESHEET_URL
-        })
-
-        if (cancelled) return
-        setAtlas(loadedAtlas)
-        setSpritesheet(img)
-        const firstTile = Object.keys(loadedAtlas.frames)[0]
-        if (firstTile) {
-          setSelectedTileId((current) => current ?? firstTile.replace(/.png$/, ""))
+        const img = await loadImage(DEFAULT_SPRITESHEET_URL)
+        const defaults = defaultProject(loadedAtlas, img.naturalWidth, img.naturalHeight)
+        const defaultsCache = await loadProjectImages(defaults.images)
+        for (const resource of defaults.images) {
+          const decoded = defaultsCache.get(resource.id)!
+          resource.width = decoded.naturalWidth
+          resource.height = decoded.naturalHeight
         }
+        let initial = defaults
+        let cache = defaultsCache
+        try {
+          const recovered = await loadAutosave()
+          if (recovered) {
+            const recoveredImages = await loadProjectImages(recovered.images)
+            if (recovered.images.some((resource) => {
+              const decoded = recoveredImages.get(resource.id)!
+              return resource.width !== decoded.naturalWidth || resource.height !== decoded.naturalHeight
+            })) throw new Error("Dimensões de imagem inválidas no salvamento automático.")
+            initial = recovered
+            cache = recoveredImages
+            setMessage("Projeto recuperado do salvamento automático.")
+          }
+        } catch (error) {
+          console.error("Erro ao recuperar salvamento automático:", error)
+          setMessage("Não foi possível recuperar o salvamento automático; o editor abriu um projeto vazio.")
+        }
+        if (cancelled) return
+        defaultsRef.current = defaults
+        setImages(cache)
+        resetHistory(initial)
+        setActiveTilemapId(initial.tilemaps[0].id)
+        setSelectedTileId(createCatalog(initial).keys().next().value ?? null)
+        setReady(true)
       } catch (err) {
         if (cancelled) return
         console.error("Error loading defaults:", err)
@@ -155,56 +208,34 @@ export function TileMapEditor() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [resetHistory])
 
-  const handlePlaceTile = useCallback(
-    (worldX: number, worldY: number) => {
-      if (!selectedTileId) return
-      
-      // Check if it's an entity (object, enemy, or player spawn) - these don't need to be in the atlas
-      const isEntity = isEntityId(selectedTileId)
-      
-      // For regular tiles, check if frame exists in atlas
-      if (!isEntity) {
-        if (!atlas) return
-        const frameName = selectedTileId + ".png"
-        const frame = atlas.frames[frameName]
-        if (!frame) return
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        const portable = await portableProject(project)
+        if (!cancelled) await saveAutosave(portable)
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Erro no salvamento automático:", error)
+          setMessage("Salvamento automático indisponível. Use “Salvar projeto” para guardar as alterações.")
+        }
       }
+    }, 1500)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [project, ready])
 
-      const snappedX = Math.floor(worldX / GRID_SIZE) * GRID_SIZE
-      const snappedY = Math.floor(worldY / GRID_SIZE) * GRID_SIZE
+  const handlePlaceTile = useCallback((worldX: number, worldY: number) => {
+    const entry = selectedTileId ? catalog.get(selectedTileId) : undefined
+    if (!entry) return
+    pushProject((current) => paintTile(current, entry, worldX, worldY, activeLayer, activeTilemap.id))
+  }, [selectedTileId, catalog, activeLayer, activeTilemap.id, pushProject])
 
-      const newTiles = tiles.filter(
-        (t) =>
-          !(t.x === snappedX && t.y === snappedY && (t.layer ?? 0) === activeLayer)
-      )
-      newTiles.push({
-        tileId: selectedTileId,
-        x: snappedX,
-        y: snappedY,
-        locked: false,
-        layer: activeLayer,
-      })
-      pushState({ tiles: newTiles, colliders, markers })
-    },
-    [selectedTileId, atlas, tiles, colliders, markers, pushState, activeLayer]
-  )
-
-  const handleEraseTile = useCallback(
-    (worldX: number, worldY: number) => {
-      const snappedX = Math.floor(worldX / GRID_SIZE) * GRID_SIZE
-      const snappedY = Math.floor(worldY / GRID_SIZE) * GRID_SIZE
-      const newTiles = tiles.filter(
-        (t) =>
-          !(t.x === snappedX && t.y === snappedY && (t.layer ?? 0) === activeLayer)
-      )
-      if (newTiles.length !== tiles.length) {
-        pushState({ tiles: newTiles, colliders, markers })
-      }
-    },
-    [tiles, colliders, markers, pushState, activeLayer]
-  )
+  const handleEraseTile = useCallback((worldX: number, worldY: number) => {
+    pushProject((current) => eraseTile(current, worldX, worldY, activeLayer, activeTilemap.id))
+  }, [activeLayer, activeTilemap.id, pushProject])
 
   const handleMoveLayerElements = useCallback(
     (sourceLayer: number, targetLayer: number) => {
@@ -214,11 +245,11 @@ export function TileMapEditor() {
         !Number.isInteger(targetLayer) ||
         sourceLayer < 0 || sourceLayer >= LAYER_COUNT ||
         targetLayer < 0 || targetLayer >= LAYER_COUNT ||
-        !tiles.some((tile) => (tile.layer ?? 0) === sourceLayer)
+        !tiles.some((tile) => (tile.resource.kind === "element" || tile.tilemapId === activeTilemap.id) && (tile.layer ?? 0) === sourceLayer)
       ) return
 
       const newTiles = tiles.map((tile) =>
-        (tile.layer ?? 0) === sourceLayer ? { ...tile, layer: targetLayer } : tile
+        (tile.resource.kind === "element" || tile.tilemapId === activeTilemap.id) && (tile.layer ?? 0) === sourceLayer ? { ...tile, layer: targetLayer } : tile
       )
       pushState({ tiles: newTiles, colliders, markers })
       // Clear the moved selection so undo cannot leave stale tile properties.
@@ -226,31 +257,29 @@ export function TileMapEditor() {
       setActiveLayer(targetLayer)
       setHiddenLayers((current) => current.filter((layer) => layer !== targetLayer))
     },
-    [tiles, colliders, markers, pushState, clearSelection]
+    [tiles, colliders, markers, activeTilemap.id, pushState, clearSelection]
   )
 
   const handleSelectTile = useCallback(
     (worldX: number, worldY: number) => {
-      const candidates = tiles.filter(
-        (t) => {
-          const { width, height } = getTileSize(t.tileId, atlas)
-          return worldX >= t.x && worldX < t.x + width &&
-            worldY >= t.y && worldY < t.y + height &&
-            !hiddenLayers.includes(t.layer ?? 0)
-        }
-      )
+      const candidates = hitTestTiles(worldX, worldY).filter((tile) => !hiddenLayers.includes(tile.layer ?? 0))
       const found =
         [...candidates].reverse().find((t) => (t.layer ?? 0) === activeLayer) ??
         candidates.reduce<PlacedTile | undefined>(
           (top, t) => (!top || (t.layer ?? 0) >= (top.layer ?? 0) ? t : top),
           undefined
         )
-      setTileSelection(found ? [found] : [])
+      if (!found || !selectedTiles.includes(found)) setTileSelection(found ? [found] : [])
       setColliderSelection([])
       setMarkerSelection([])
+      return found ?? null
     },
-    [tiles, atlas, activeLayer, hiddenLayers]
+    [hitTestTiles, activeLayer, hiddenLayers, selectedTiles]
   )
+
+  const handleMoveElements = useCallback((origins: { id: string; x: number; y: number }[], dx: number, dy: number) => {
+    pushProject((current) => moveElements(current, origins, dx, dy))
+  }, [pushProject])
 
   const handleSelectCollider = useCallback(
     (worldX: number, worldY: number) => {
@@ -301,8 +330,10 @@ export function TileMapEditor() {
 
   const handlePlaceMarker = useCallback(
     (worldX: number, worldY: number) => {
-      const x = Math.floor(worldX / GRID_SIZE) * GRID_SIZE
-      const y = Math.floor(worldY / GRID_SIZE) * GRID_SIZE
+      const alignment = project.scene.annotationAlignment ?? DEFAULT_OBJECT_ALIGNMENT
+      const { x, y } = alignment.enabled
+        ? snapToTilemap(worldX, worldY, alignment)
+        : { x: Math.round(worldX), y: Math.round(worldY) }
       let n = markers.length + 1
       while (markers.some((m) => m.name === `marker${n}`)) n++
       const marker: Marker = { name: `marker${n}`, x, y }
@@ -311,7 +342,7 @@ export function TileMapEditor() {
       setTileSelection([])
       setColliderSelection([])
     },
-    [tiles, colliders, markers, pushState]
+    [project.scene.annotationAlignment, tiles, colliders, markers, pushState]
   )
 
   const handleSelectMarker = useCallback((marker: Marker) => {
@@ -344,86 +375,118 @@ export function TileMapEditor() {
 
   const handleClearAll = useCallback(() => {
     if (window.confirm("Tem certeza que deseja limpar tudo? Esta acao nao pode ser desfeita.")) {
-      resetHistory({ tiles: [], colliders: [], markers: [] })
+      resetHistory({ ...project, tilemaps: project.tilemaps.map((map) => ({ ...map, tiles: [] })), elements: [], colliders: [], markers: [] })
       clearSelection()
     }
-  }, [resetHistory, clearSelection])
+  }, [project, resetHistory, clearSelection])
 
-  const handleImportMap = useCallback(() => {
-    const input = document.createElement("input")
-    input.type = "file"
-    input.accept = ".json"
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0]
-      if (!file) return
-      const reader = new FileReader()
-      reader.onload = (ev) => {
-        try {
-          const json = JSON.parse(ev.target?.result as string)
-          const loadedTiles: PlacedTile[] = []
-          const loadedColliders: Collider[] = []
-          const loadedMarkers: Marker[] = []
-          let loadedBackgroundColor = "#1a1a2e"
-
-          if (typeof json.backgroundColor === "string") {
-            loadedBackgroundColor = json.backgroundColor
-          }
-
-          if (Array.isArray(json.colliders)) {
-            for (const c of json.colliders) {
-              loadedColliders.push({
-                x: c.x,
-                y: c.y,
-                width: c.width,
-                height: c.height,
-                type: c.type || "ground",
-              })
-            }
-          }
-
-          if (Array.isArray(json.markers)) {
-            for (const m of json.markers) {
-              loadedMarkers.push({
-                name: typeof m.name === "string" ? m.name : `marker${loadedMarkers.length + 1}`,
-                x: Number(m.x) || 0,
-                y: Number(m.y) || 0,
-              })
-            }
-          }
-
-          const tilesObj = json.tiles as Record<string, unknown> | undefined
-          if (tilesObj && typeof tilesObj === "object") {
-            for (const [tileId, tileArray] of Object.entries(tilesObj)) {
-              if (Array.isArray(tileArray)) {
-                for (const t of tileArray) {
-                  loadedTiles.push({
-                    tileId,
-                    x: t.x,
-                    y: t.y,
-                    locked: t.locked ?? false,
-                    layer:
-                      t.layer === undefined
-                        ? defaultLayerFor(tileId)
-                        : normalizeLayer(t.layer),
-                    creationCode: t.creationCode ?? null,
-                  })
-                }
-              }
-            }
-          }
-
-          resetHistory({ tiles: loadedTiles, colliders: loadedColliders, markers: loadedMarkers })
-          clearSelection()
-          setBackgroundColor(normalizeBackgroundColor(loadedBackgroundColor))
-          mapFileNameRef.current = file.name
-        } catch {
-          alert("Erro ao importar o arquivo JSON.")
+  const handleImportMap = useCallback(async () => {
+    setFileBusy(true)
+    setMessage(null)
+    try {
+      const file = await pickJsonFile()
+      if (file && defaultsRef.current) {
+        const json = JSON.parse(await file.text())
+        const next = json.format !== undefined || json.version !== undefined
+          ? parseProject(json)
+          : importLegacy(json, defaultsRef.current)
+        const cache = await loadProjectImages(next.images)
+        for (const resource of next.images) {
+          const decoded = cache.get(resource.id)!
+          if (resource.width !== decoded.naturalWidth || resource.height !== decoded.naturalHeight) throw new Error(`Dimensões incorretas na imagem ${resource.name}.`)
         }
+        resetHistory(next)
+        setImages(cache)
+        clearSelection()
+        setHiddenLayers([])
+        setActiveLayer(0)
+        setActiveTilemapId(next.tilemaps[0].id)
+        setCamera({ x: 0, y: 0, zoom: 1 })
+        setSelectedTileId(createCatalog(next).keys().next().value ?? null)
+        mapFileNameRef.current = file.name
+        const missing = editorContent(next).tiles.filter((tile) => tile.resource.kind === "missing").length
+        setMessage(missing ? `${missing} instância(s) sem imagem conhecida foram preservadas e aparecem com contorno amarelo.` : "Projeto aberto.")
       }
-      reader.readAsText(file)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Erro ao importar o arquivo JSON.")
+    } finally {
+      setFileBusy(false)
     }
-    input.click()
   }, [resetHistory, clearSelection])
+
+  const handleAddTileset = useCallback((image: ImageResource, set: Tileset, decoded: HTMLImageElement) => {
+    pushProject(addTileset(project, image, set))
+    setImages((cache) => new Map(cache).set(image.id, decoded))
+    setSelectedTileId(referenceKey({ kind: "tile", tilesetId: set.id, cropId: set.crops[0].id }))
+    clearSelection()
+    setActiveTool("place")
+    setActiveLayer(0)
+  }, [project, pushProject, clearSelection])
+
+  const handleAddElement = useCallback((definition: ElementResource, image?: ImageResource, decoded?: HTMLImageElement) => {
+    pushProject((current) => addElementDefinition(current, definition, image))
+    if (image && decoded) setImages((cache) => new Map(cache).set(image.id, decoded))
+    setSelectedTileId(referenceKey({ kind: "element", definitionId: definition.id }))
+    setActiveLayer(1)
+    setActiveTool("place")
+    clearSelection()
+  }, [pushProject, clearSelection])
+
+  const handleCreateTilemap = useCallback(() => {
+    const id = newId("tilemap")
+    pushProject((current) => createTilemap(current, `TileMap ${current.tilemaps.length + 1}`, id))
+    setActiveTilemapId(id)
+    clearSelection()
+  }, [pushProject, clearSelection])
+
+  const handleSelectTilemap = useCallback((id: string) => {
+    setActiveTilemapId(id)
+    clearSelection()
+  }, [clearSelection])
+
+  const handleRenameTilemap = useCallback((id: string, name: string) => {
+    pushProject((current) => renameTilemap(current, id, name))
+  }, [pushProject])
+
+  const handleTilemapVisibility = useCallback((id: string, visible: boolean) => {
+    pushProject((current) => setTilemapVisibility(current, id, visible))
+    if (visible) setActiveTilemapId(id)
+    else if (activeTilemap.id === id) {
+      setActiveTilemapId(project.tilemaps.find((map) => map.id !== id && map.visible)?.id ?? id)
+    }
+    clearSelection()
+  }, [pushProject, activeTilemap.id, project.tilemaps, clearSelection])
+
+  const handleConfigureTilemap = useCallback((id: string, grid: TilemapGrid, policy: GridChangePolicy) => {
+    pushProject((current) => updateTilemapGrid(current, id, grid, policy))
+    clearSelection()
+  }, [pushProject, clearSelection])
+
+  const handleTilemapLayer = useCallback((id: string, layer: number) => {
+    pushProject((current) => setTilemapLayer(current, id, layer))
+  }, [pushProject])
+
+  const handleObjectAlignment = useCallback((alignment: ObjectAlignment) => {
+    pushProject((current) => updateObjectAlignment(current, alignment))
+  }, [pushProject])
+
+  const handleAnnotationAlignment = useCallback((alignment: ObjectAlignment) => {
+    pushProject((current) => updateAnnotationAlignment(current, alignment))
+  }, [pushProject])
+
+  const handleSaveProject = useCallback(async () => {
+    setFileBusy(true)
+    setMessage(null)
+    try {
+      const portable = await portableProject(project)
+      const saved = await saveJson(portable, mapFileNameRef.current.replace(/(?:\.project)?\.json$/i, "") + ".project.json")
+      if (saved) setMessage("Projeto salvo com imagens incorporadas.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Erro ao salvar projeto.")
+    } finally {
+      setFileBusy(false)
+    }
+  }, [project])
 
   const handleToggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -443,50 +506,17 @@ export function TileMapEditor() {
       document.removeEventListener("fullscreenchange", handleFullscreenChange)
   }, [])
 
-  const handleExport = useCallback(() => {
-    // Build tiles grouped by tileId
-    const tilesData: Record<string, unknown[]> = {}
-    for (const tile of tiles) {
-      const tileId = normalizeTileId(tile.tileId)
-      if (!tilesData[tileId]) {
-        tilesData[tileId] = []
-      }
-      const entry: Record<string, unknown> = {
-        x: tile.x,
-        y: tile.y,
-      }
-      if (tile.creationCode !== undefined) {
-        entry.creationCode = tile.creationCode
-      }
-      entry.locked = tile.locked ?? false
-      entry.layer = tile.layer ?? 0
-      ;(tilesData[tileId] as unknown[]).push(entry)
+  const handleExport = useCallback(async () => {
+    setFileBusy(true)
+    try {
+      const saved = await saveJson(exportLegacy(project), mapFileNameRef.current.replace(/\.project\.json$/i, ".json"))
+      if (saved) setMessage("Mapa exportado no formato antigo.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Erro ao exportar mapa.")
+    } finally {
+      setFileBusy(false)
     }
-
-    // Build final map data with new structure
-    const mapData: Record<string, unknown> = {
-      backgroundColor,
-      tiles: tilesData,
-      colliders: colliders.map((c) => ({
-        x: c.x,
-        y: c.y,
-        width: c.width,
-        height: c.height,
-        type: c.type,
-      })),
-      markers: markers.map((m) => ({ name: m.name, x: m.x, y: m.y })),
-    }
-
-    const blob = new Blob([JSON.stringify(mapData, null, 2)], {
-      type: "application/json",
-    })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = mapFileNameRef.current
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [tiles, colliders, markers, backgroundColor])
+  }, [project])
 
   const handleUpdateSelectedTile = useCallback(
     (changes: Partial<PlacedTile>) => {
@@ -560,7 +590,7 @@ export function TileMapEditor() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [handleToggleFullscreen, handleUndo, handleRedo, clearSelection, handleDeleteSelection])
 
-  if (!atlas || !spritesheet) {
+  if (!ready) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#1a1a2e] text-sm text-[#8888aa]">
         {loadError ? (
@@ -591,6 +621,8 @@ export function TileMapEditor() {
         onShowMarkersChange={setShowMarkers}
         backgroundColor={backgroundColor}
         onBackgroundColorChange={setBackgroundColor}
+        fileBusy={fileBusy}
+        onSaveProject={handleSaveProject}
         onImportMap={handleImportMap}
         onExport={handleExport}
         onUndo={handleUndo}
@@ -599,28 +631,40 @@ export function TileMapEditor() {
         onResetView={handleResetView}
         onToggleFullscreen={handleToggleFullscreen}
       />
+      {(message || fileBusy) && (
+        <div role="status" className="flex items-center justify-between border-b border-[#2a2a4a] bg-[#16213e] px-3 py-2 text-xs text-[#e0e0e0]">
+          <span>{fileBusy ? "Processando arquivo…" : message}</span>
+          {!fileBusy && <button aria-label="Fechar aviso" onClick={() => setMessage(null)}>×</button>}
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ToolsSidebar activeTool={activeTool} onToolChange={setActiveTool} />
         <TilePalette
-          atlas={atlas}
-          spritesheet={spritesheet}
+          project={project}
+          catalog={catalog}
+          images={images}
+          onAddTileset={handleAddTileset}
+          onAddElement={handleAddElement}
           selectedTileId={selectedTileId}
           onSelectTile={(id) => {
             clearSelection()
             setSelectedTileId(id)
-            setActiveLayer(defaultLayerFor(id))
+            setActiveLayer(catalog.get(id)?.resource.kind === "element" ? 1 : 0)
             setActiveTool("place")
           }}
         />
         <EditorCanvas
-          atlas={atlas}
-          spritesheet={spritesheet}
-          tiles={tiles}
+          tilemap={activeTilemap}
+          tilemaps={project.tilemaps}
+          annotationAlignment={project.scene.annotationAlignment ?? DEFAULT_OBJECT_ALIGNMENT}
+          catalog={catalog}
+          images={images}
+          tiles={visibleTiles}
           colliders={colliders}
           markers={markers}
           showMarkers={showMarkers}
           selectedMarkers={selectedMarkers}
-          selectedTiles={selectedTiles}
+          selectedTiles={selectedTiles.filter((tile) => visibleTiles.includes(tile as typeof tiles[number]))}
           onPlaceMarker={handlePlaceMarker}
           onSelectMarker={handleSelectMarker}
           onDeleteMarker={handleDeleteMarker}
@@ -635,6 +679,7 @@ export function TileMapEditor() {
           onPlaceTile={handlePlaceTile}
           onEraseTile={handleEraseTile}
           onSelectTile={handleSelectTile}
+          onMoveElements={handleMoveElements}
           onSelectCollider={handleSelectCollider}
           onAddCollider={handleAddCollider}
           onDeleteCollider={handleDeleteCollider}
@@ -642,10 +687,22 @@ export function TileMapEditor() {
           onEndBatch={handleEndBatch}
         />
         <div className="flex w-56 shrink-0 flex-col overflow-y-auto [&>*:last-child]:flex-1">
+          <TilemapsPanel
+            tilemaps={project.tilemaps}
+            activeId={activeTilemap.id}
+            onCreate={handleCreateTilemap}
+            onSelect={handleSelectTilemap}
+            onRename={handleRenameTilemap}
+            onVisibility={handleTilemapVisibility}
+            onConfigure={handleConfigureTilemap}
+            onLayerChange={handleTilemapLayer}
+          />
+          <ObjectAlignmentPanel alignment={project.scene.objectAlignment ?? DEFAULT_OBJECT_ALIGNMENT} onChange={handleObjectAlignment} />
+          <ObjectAlignmentPanel alignment={project.scene.annotationAlignment ?? DEFAULT_OBJECT_ALIGNMENT} onChange={handleAnnotationAlignment} title="Marcadores e colliders" buttonLabel="Grade de marcações…" description="Define a grade para novos marcadores e colliders. Os já existentes mantêm suas posições e tamanhos." />
           <LayersPanel
             activeLayer={activeLayer}
             hiddenLayers={hiddenLayers}
-            activeLayerElementCount={tiles.filter((tile) => (tile.layer ?? 0) === activeLayer).length}
+            activeLayerElementCount={tiles.filter((tile) => (tile.resource.kind === "element" || tile.tilemapId === activeTilemap.id) && (tile.layer ?? 0) === activeLayer).length}
             onActiveLayerChange={setActiveLayer}
             onMoveLayerElements={handleMoveLayerElements}
             onToggleLayerVisibility={(layer) =>

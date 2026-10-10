@@ -11,111 +11,61 @@ export interface EditorState {
 
 const MAX_HISTORY = 50
 
-export function useHistory(initialState: EditorState) {
-  const [past, setPast] = useState<EditorState[]>([])
-  const [present, setPresent] = useState<EditorState>(initialState)
-  const [future, setFuture] = useState<EditorState[]>([])
-  
-  // Track if we're in a batch operation
-  const batchRef = useRef(false)
-  const batchStartStateRef = useRef<EditorState | null>(null)
-
-  const canUndo = past.length > 0
-  const canRedo = future.length > 0
-
-  // Push current state to history and set new state
-  const pushState = useCallback((newState: EditorState) => {
-    if (batchRef.current) {
-      // During batch, just update present without pushing to history
-      setPresent(newState)
-      return
-    }
-    
-    setPast((prev) => {
-      const newPast = [...prev, present]
-      // Limit history size
-      if (newPast.length > MAX_HISTORY) {
-        return newPast.slice(newPast.length - MAX_HISTORY)
-      }
-      return newPast
-    })
-    setPresent(newState)
-    setFuture([]) // Clear redo stack on new action
-  }, [present])
-
-  // Start a batch operation (e.g., dragging to place multiple tiles)
-  const startBatch = useCallback(() => {
-    if (!batchRef.current) {
-      batchRef.current = true
-      batchStartStateRef.current = present
-    }
-  }, [present])
-
-  // End batch and commit to history
-  const endBatch = useCallback(() => {
-    if (batchRef.current && batchStartStateRef.current) {
-      const startState = batchStartStateRef.current
-      batchRef.current = false
-      batchStartStateRef.current = null
-      
-      // Only push to history if state actually changed
-      if (
-        JSON.stringify(startState.tiles) !== JSON.stringify(present.tiles) ||
-        JSON.stringify(startState.colliders) !== JSON.stringify(present.colliders) ||
-        JSON.stringify(startState.markers) !== JSON.stringify(present.markers)
-      ) {
-        setPast((prev) => {
-          const newPast = [...prev, startState]
-          if (newPast.length > MAX_HISTORY) {
-            return newPast.slice(newPast.length - MAX_HISTORY)
-          }
-          return newPast
-        })
-        setFuture([])
-      }
-    }
-  }, [present])
-
-  const undo = useCallback(() => {
-    if (past.length === 0) return
-    
-    const previous = past[past.length - 1]
-    const newPast = past.slice(0, -1)
-    
-    setPast(newPast)
-    setFuture([present, ...future])
-    setPresent(previous)
-  }, [past, present, future])
-
-  const redo = useCallback(() => {
-    if (future.length === 0) return
-    
-    const next = future[0]
-    const newFuture = future.slice(1)
-    
-    setPast([...past, present])
-    setFuture(newFuture)
-    setPresent(next)
-  }, [past, present, future])
-
-  // Reset history with new initial state
-  const reset = useCallback((newState: EditorState) => {
-    setPast([])
-    setPresent(newState)
-    setFuture([])
+export function useHistory<T>(initialState: T) {
+  const [history, setHistory] = useState({ past: [] as T[], present: initialState, future: [] as T[] })
+  const historyRef = useRef(history)
+  const batchStart = useRef<{ state: T } | null>(null)
+  const commit = useCallback((next: typeof history) => {
+    historyRef.current = next
+    setHistory(next)
   }, [])
 
+  const pushState = useCallback((value: T | ((present: T) => T)) => {
+    const current = historyRef.current
+    const next = typeof value === "function" ? (value as (present: T) => T)(current.present) : value
+    if (next === current.present) return
+    commit({
+      past: batchStart.current ? current.past : [...current.past, current.present].slice(-MAX_HISTORY),
+      present: next,
+      future: [],
+    })
+  }, [commit])
+
+  const startBatch = useCallback(() => {
+    batchStart.current ??= { state: historyRef.current.present }
+  }, [])
+
+  const endBatch = useCallback(() => {
+    const start = batchStart.current
+    batchStart.current = null
+    const current = historyRef.current
+    if (start && start.state !== current.present) {
+      commit({ ...current, past: [...current.past, start.state].slice(-MAX_HISTORY), future: [] })
+    }
+  }, [commit])
+
+  const undo = useCallback(() => {
+    endBatch()
+    const current = historyRef.current
+    if (!current.past.length) return
+    commit({ past: current.past.slice(0, -1), present: current.past[current.past.length - 1], future: [current.present, ...current.future] })
+  }, [commit, endBatch])
+
+  const redo = useCallback(() => {
+    endBatch()
+    const current = historyRef.current
+    if (!current.future.length) return
+    commit({ past: [...current.past, current.present].slice(-MAX_HISTORY), present: current.future[0], future: current.future.slice(1) })
+  }, [commit, endBatch])
+
+  const reset = useCallback((next: T) => {
+    batchStart.current = null
+    commit({ past: [], present: next, future: [] })
+  }, [commit])
+
   return {
-    state: present,
-    pushState,
-    startBatch,
-    endBatch,
-    undo,
-    redo,
-    canUndo,
-    canRedo,
-    reset,
-    historyLength: past.length,
-    futureLength: future.length,
+    state: history.present, pushState, startBatch, endBatch, undo, redo, reset,
+    canUndo: history.past.length > 0, canRedo: history.future.length > 0,
+    historyLength: history.past.length, futureLength: history.future.length,
   }
 }

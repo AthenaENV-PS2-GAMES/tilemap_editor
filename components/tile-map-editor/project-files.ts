@@ -1,0 +1,118 @@
+import type { ImageResource, ProjectDocument } from "./types"
+import { parseProject } from "./project"
+
+interface FilePickerWindow extends Window {
+  showOpenFilePicker?: (options: { types: { description: string; accept: Record<string, string[]> }[]; multiple: false }) => Promise<{ getFile: () => Promise<File> }[]>
+  showSaveFilePicker?: (options: { suggestedName: string; types: { description: string; accept: Record<string, string[]> }[] }) => Promise<{ createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> }>
+}
+
+const jsonTypes = [{ description: "Projeto JSON", accept: { "application/json": [".json"] } }]
+
+export async function pickJsonFile(): Promise<File | null> {
+  const picker = (window as FilePickerWindow).showOpenFilePicker
+  if (picker) {
+    try {
+      const handles = await picker.call(window, { types: jsonTypes, multiple: false })
+      return handles[0] ? handles[0].getFile() : null
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return null
+      if (!(error instanceof DOMException) || !["SecurityError", "NotAllowedError"].includes(error.name)) throw error
+    }
+  }
+  return new Promise((resolve) => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = ".json,application/json"
+    input.addEventListener("change", () => resolve(input.files?.[0] ?? null), { once: true })
+    input.addEventListener("cancel", () => resolve(null), { once: true })
+    input.click()
+  })
+}
+
+export function readDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error("Não foi possível ler a imagem."))
+    reader.readAsDataURL(blob)
+  })
+}
+
+export function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error("Não foi possível decodificar a imagem."))
+    image.src = src
+  })
+}
+
+export async function loadProjectImages(images: ImageResource[]) {
+  const loaded = await Promise.all(images.map(async (resource) => [resource.id, await loadImage(resource.src)] as const))
+  return new Map(loaded)
+}
+
+const embeddedSources = new Map<string, Promise<string>>()
+const decodedSizes = new Map<string, Promise<{ width: number; height: number }>>()
+
+function embedSource(src: string): Promise<string> {
+  if (src.startsWith("data:")) return Promise.resolve(src)
+  const existing = embeddedSources.get(src)
+  if (existing) return existing
+  const result = fetch(src).then(async (response) => {
+    if (!response.ok) throw new Error(`Não foi possível incorporar ${src}.`)
+    return readDataUrl(await response.blob())
+  }).catch((error) => { embeddedSources.delete(src); throw error })
+  embeddedSources.set(src, result)
+  return result
+}
+
+function imageSize(src: string): Promise<{ width: number; height: number }> {
+  const existing = decodedSizes.get(src)
+  if (existing) return existing
+  const result = loadImage(src).then((decoded) => ({ width: decoded.naturalWidth, height: decoded.naturalHeight }))
+    .catch((error) => { decodedSizes.delete(src); throw error })
+  decodedSizes.set(src, result)
+  return result
+}
+
+export async function portableProject(project: ProjectDocument) {
+  const images = await Promise.all(project.images.map(async (image) => {
+    const src = await embedSource(image.src)
+    const size = await imageSize(src)
+    return { ...image, src, ...size }
+  }))
+  return parseProject({ ...project, images })
+}
+
+function downloadBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = name
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+export function downloadJson(value: unknown, name: string) {
+  downloadBlob(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }), name)
+}
+
+export async function saveJson(value: unknown, name: string): Promise<boolean> {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })
+  const picker = (window as FilePickerWindow).showSaveFilePicker
+  if (picker) {
+    try {
+      const handle = await picker.call(window, { suggestedName: name, types: jsonTypes })
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return true
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return false
+      if (!(error instanceof DOMException) || !["SecurityError", "NotAllowedError"].includes(error.name)) throw error
+    }
+  }
+  downloadBlob(blob, name)
+  return true
+}
