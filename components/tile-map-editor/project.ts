@@ -180,6 +180,12 @@ export function createTilemap(project: ProjectDocument, name: string, id = newId
   return { ...project, tilemaps: [...project.tilemaps, map] }
 }
 
+export function deleteTilemap(project: ProjectDocument, id: string): ProjectDocument {
+  if (!project.tilemaps.some((map) => map.id === id)) throw new Error("Tilemap não encontrado.")
+  if (project.tilemaps.length === 1) throw new Error("O projeto precisa de pelo menos um tilemap.")
+  return { ...project, tilemaps: project.tilemaps.filter((map) => map.id !== id) }
+}
+
 export function renameTilemap(project: ProjectDocument, id: string, name: string): ProjectDocument {
   const normalizedName = name.trim()
   if (!normalizedName) throw new Error("O tilemap precisa de um nome.")

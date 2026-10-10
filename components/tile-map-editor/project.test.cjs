@@ -224,6 +224,21 @@ test("tilemaps use independent origins and cell sizes without resizing crops or 
   assert.equal(project.tilemaps[0].tiles.length, 1)
 })
 
+test("deleting a tilemap removes its tiles, preserves other content and keeps one map", () => {
+  let project = api.createTilemap(portable(defaults()), "Upper", "map:upper")
+  const entry = [...api.createCatalog(project).values()].find((item) => item.resource.kind === "tile")
+  project = api.paintTile(project, entry, 16, 16, 0, project.tilemaps[0].id)
+  project = api.paintTile(project, entry, 32, 32, 0, "map:upper")
+  const remaining = project.tilemaps[0]
+  const result = api.deleteTilemap(project, "map:upper")
+  assert.equal(result.tilemaps.length, 1)
+  assert.equal(result.tilemaps[0], remaining)
+  assert.equal(api.editorContent(result).tiles.length, 1)
+  assert.deepEqual(api.parseProject(JSON.parse(JSON.stringify(result))), result)
+  assert.throws(() => api.deleteTilemap(result, remaining.id), /pelo menos um tilemap/)
+  assert.throws(() => api.deleteTilemap(project, "missing"), /não encontrado/)
+})
+
 test("occupied grid changes preview movement and require an explicit position policy", () => {
   let project = defaults()
   const entry = [...api.createCatalog(project).values()].find((item) => item.resource.kind === "tile")

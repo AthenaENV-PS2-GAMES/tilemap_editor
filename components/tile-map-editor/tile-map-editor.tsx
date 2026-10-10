@@ -29,7 +29,7 @@ import { useHistory } from "./use-history"
 import { normalizeBackgroundColor } from "@/lib/utils"
 import { selectMatchingElements, updateSelectedElements } from "./selection"
 import { createSpatialIndex } from "./selection-index"
-import { addElementDefinition, addTileset, createCatalog, createTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
+import { addElementDefinition, addTileset, createCatalog, createTilemap, deleteTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
 import { loadImage, loadProjectImages, pickJsonFile, portableProject, saveJson } from "./project-files"
 import { loadAutosave, saveAutosave } from "./autosave"
 
@@ -459,6 +459,14 @@ export function TileMapEditor() {
     clearSelection()
   }, [pushProject, clearSelection])
 
+  const handleDeleteTilemap = useCallback((id: string) => {
+    if (project.tilemaps.length <= 1 || !project.tilemaps.some((map) => map.id === id)) return
+    const remaining = project.tilemaps.filter((map) => map.id !== id)
+    pushProject((current) => deleteTilemap(current, id))
+    if (activeTilemap.id === id) setActiveTilemapId((remaining.find((map) => map.visible) ?? remaining[0]).id)
+    clearSelection()
+  }, [project.tilemaps, activeTilemap.id, pushProject, clearSelection])
+
   const handleSelectTilemap = useCallback((id: string) => {
     setActiveTilemapId(id)
     clearSelection()
@@ -714,6 +722,7 @@ export function TileMapEditor() {
             tilemaps={project.tilemaps}
             activeId={activeTilemap.id}
             onCreate={handleCreateTilemap}
+            onDelete={handleDeleteTilemap}
             onSelect={handleSelectTilemap}
             onRename={handleRenameTilemap}
             onVisibility={handleTilemapVisibility}

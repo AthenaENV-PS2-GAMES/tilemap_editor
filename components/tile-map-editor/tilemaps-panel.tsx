@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Eye, EyeOff, Plus, Settings2 } from "lucide-react"
+import { Eye, EyeOff, Plus, Settings2, Trash2 } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import type { Tilemap } from "./types"
 import { previewTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
@@ -10,6 +10,7 @@ interface TilemapsPanelProps {
   tilemaps: Tilemap[]
   activeId: string
   onCreate: () => void
+  onDelete: (id: string) => void
   onSelect: (id: string) => void
   onRename: (id: string, name: string) => void
   onVisibility: (id: string, visible: boolean) => void
@@ -19,10 +20,12 @@ interface TilemapsPanelProps {
 
 const inputClass = "w-full rounded bg-[#1a1a2e] px-2 py-1.5 text-xs text-[#e0e0e0] outline-none focus:ring-1 focus:ring-[#4a90d9]"
 
-export function TilemapsPanel({ tilemaps, activeId, onCreate, onSelect, onRename, onVisibility, onConfigure, onLayerChange }: TilemapsPanelProps) {
+export function TilemapsPanel({ tilemaps, activeId, onCreate, onDelete, onSelect, onRename, onVisibility, onConfigure, onLayerChange }: TilemapsPanelProps) {
   const active = tilemaps.find((map) => map.id === activeId) ?? tilemaps[0]
   const [name, setName] = useState(active?.name ?? "")
   const [configOpen, setConfigOpen] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const pendingDelete = tilemaps.find((map) => map.id === deleteId)
   const [draft, setDraft] = useState<TilemapGrid>({ cellWidth: 16, cellHeight: 16, origin: { x: 0, y: 0 } })
   const [policy, setPolicy] = useState<GridChangePolicy | null>(null)
 
@@ -51,6 +54,7 @@ export function TilemapsPanel({ tilemaps, activeId, onCreate, onSelect, onRename
       {tilemaps.map((map) => <div key={map.id} className={`flex items-center gap-1 rounded text-xs ${active?.id === map.id ? "bg-[#4a90d9] text-white" : "text-[#aaaacc] hover:bg-[#2a2a4a]"}`}>
         <button type="button" aria-label={`Selecionar ${map.name}`} aria-pressed={active?.id === map.id} onClick={() => onSelect(map.id)} className="min-w-0 flex-1 truncate px-2 py-1.5 text-left">{map.name} <span className="opacity-70">({map.tiles.length})</span></button>
         <button type="button" aria-label={`${map.visible ? "Ocultar" : "Mostrar"} ${map.name}`} title={map.visible ? "Ocultar tilemap" : "Mostrar tilemap"} onClick={() => onVisibility(map.id, !map.visible)} className="p-1.5">{map.visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}</button>
+        <button type="button" aria-label={`Excluir ${map.name}`} title={tilemaps.length === 1 ? "O projeto precisa de um tilemap" : `Excluir ${map.name}`} disabled={tilemaps.length === 1} onClick={() => setDeleteId(map.id)} className="p-1.5 text-[#aaaacc] hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-30"><Trash2 className="h-3.5 w-3.5" /></button>
       </div>)}
     </div>
     {active && <div className="space-y-2 border-t border-[#2a2a4a] p-2">
@@ -97,6 +101,16 @@ export function TilemapsPanel({ tilemaps, activeId, onCreate, onSelect, onRename
           onConfigure(active.id, draft, policy ?? "keep-world")
           setConfigOpen(false)
         }}>Aplicar grade</button>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!pendingDelete} onOpenChange={(open) => { if (!open) setDeleteId(null) }}>
+      <DialogContent className="border-[#2a2a4a] bg-[#16213e] text-[#e0e0e0]">
+        <DialogTitle>Excluir {pendingDelete?.name}?</DialogTitle>
+        <DialogDescription>O tilemap e seus {pendingDelete?.tiles.length ?? 0} tile(s) serão removidos. Você pode desfazer esta ação.</DialogDescription>
+        <div className="flex justify-end gap-2 text-xs">
+          <button type="button" onClick={() => setDeleteId(null)} className="rounded bg-[#2a2a4a] px-3 py-1.5">Cancelar</button>
+          <button type="button" onClick={() => { if (pendingDelete && tilemaps.length > 1) onDelete(pendingDelete.id); setDeleteId(null) }} className="rounded bg-red-600 px-3 py-1.5 text-white">Excluir tilemap</button>
+        </div>
       </DialogContent>
     </Dialog>
   </section>
