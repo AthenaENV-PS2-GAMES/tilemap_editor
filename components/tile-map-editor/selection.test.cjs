@@ -138,12 +138,3 @@ test("the properties panel reports mixed layers and edits only the chosen proper
   nodes.find((node) => node.props?.onClick && node.props.children?.includes?.("Selecionar todos os iguais")).props.onClick()
   assert.equal(selectMatchingCalls, 1)
 })
-
-test("sprite dimensions cover background objects and only one frame of animated objects", () => {
-  const { getTileSize } = loadTypeScriptModule(path.join(__dirname, "tile-size.ts"))
-  assert.deepEqual(getTileSize("bgCloud", null), { width: 48, height: 16 })
-  assert.deepEqual(getTileSize("bgPyramid", null), { width: 256, height: 256 })
-  assert.deepEqual(getTileSize("spriteTorch", null), { width: 16, height: 16 })
-  const atlas = { frames: { "tileSand.png": { frame: { x: 0, y: 0, w: 32, h: 16 } } } }
-  assert.deepEqual(getTileSize("tileSand", atlas), { width: 32, height: 16 })
-})

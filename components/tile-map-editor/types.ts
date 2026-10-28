@@ -8,17 +8,6 @@ export interface ColliderTypeDefinition {
   color: string
 }
 
-export interface EntityDefinition {
-  id: string
-  name: string
-  imageSrc: string
-  width: number
-  height: number
-  // For spritesheets: number of frames and frame width (defaults to width if not set)
-  frameCount?: number
-  frameWidth?: number
-}
-
 export interface PlacedTile {
   id?: string
   resource?: ResourceReference
@@ -33,14 +22,14 @@ export interface PlacedTile {
 }
 
 export type ResourceReference =
-  | { kind: "tile"; tilesetId: string; cropId: string }
+  | { kind: "tile"; tilesetId: string; index: number }
   | { kind: "element"; definitionId: string }
-  | { kind: "missing"; legacyId: string }
 
 export interface ImageResource {
   id: string
   name: string
-  src: string
+  // Absent while the file is waiting for the user to attach the image.
+  src?: string
   width: number
   height: number
 }
@@ -67,8 +56,9 @@ export interface Tileset {
   imageId: string
   mode: "grid" | "atlas"
   grid?: GridConfig
+  // Atlas crops stay empty until the atlas is attached; cropCount is what the saved indexes refer to.
   crops: Crop[]
-  legacy?: boolean
+  cropCount: number
 }
 
 export interface ElementResource {
@@ -77,7 +67,6 @@ export interface ElementResource {
   category: "Objetos" | "Inimigos" | "Player" | "Decoração"
   imageId: string
   crop: Crop
-  legacyId?: string
 }
 
 export interface ProjectInstance extends PlacedTile {
@@ -111,7 +100,7 @@ export interface CanvasSize {
 
 export interface ProjectDocument {
   format: "tilemap-editor"
-  version: 1
+  version: 2
   images: ImageResource[]
   tilesets: Tileset[]
   elementDefinitions: ElementResource[]
@@ -137,29 +126,6 @@ export interface Collider {
   type: ColliderType
 }
 
-export interface AtlasFrame {
-  frame: { x: number; y: number; w: number; h: number }
-  spriteSourceSize: { x: number; y: number; w: number; h: number }
-  sourceSize: { w: number; h: number }
-  rotated?: boolean
-  trimmed?: boolean
-  pivot?: { x: number; y: number }
-}
-
-export interface TextureAtlas {
-  frames: Record<string, AtlasFrame>
-  meta?: {
-    image?: string
-    size?: { w: number; h: number }
-    scale?: number
-  }
-}
-
-export interface MapData {
-  [key: string]: PlacedTile[] | Collider[]
-  colliders: Collider[]
-}
-
 export interface Camera {
   x: number
   y: number
@@ -169,45 +135,6 @@ export interface Camera {
 export const GRID_SIZE = 16
 export const LAYER_COUNT = 5
 
-export function normalizeTileId(tileId: string): string {
-  switch (tileId) {
-    case "bgSphinx":
-    case "enSphinx":
-    case "bossSphynx":
-    case "standingSphynx":
-      return "lwSphinx"
-    case "standingBastet":
-      return "bossBastet"
-    default:
-      return tileId
-  }
-}
-
-// Objects, enemies and the player spawn (not atlas tiles)
-export function isEntityId(tileId: string): boolean {
-  return (
-    normalizeTileId(tileId) === "lwSphinx" ||
-    normalizeTileId(tileId) === "bossBastet" ||
-    tileId === "bgCloud" ||
-    tileId === "bgGreyCloud" ||
-    tileId === "bgPyramid" ||
-    tileId.startsWith("ob") ||
-    tileId.startsWith("en") ||
-    tileId.startsWith("boss") ||
-    tileId.startsWith("sprite")
-  )
-}
-
-// Tiles default to layer 1 (index 0), other objects to layer 2 (index 1)
-export function defaultLayerFor(tileId: string): number {
-  return isEntityId(tileId) ? 1 : 0
-}
-
-export function normalizeLayer(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value)
-    ? Math.min(Math.max(value, 0), LAYER_COUNT - 1)
-    : 0
-}
 export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 4
 
@@ -222,4 +149,31 @@ export const DEFAULT_COLLIDER_TYPES: ColliderTypeDefinition[] = [
 export function colliderColor(color: string, opacity: number): string {
   const rgb = [1, 3, 5].map((index) => parseInt(color.slice(index, index + 2), 16))
   return `rgba(${rgb.join(", ")}, ${opacity})`
+}
+
+// On-disk shape (version 2): no image data, no crops. Tiles are tileset index + position.
+export interface FileInstance {
+  tileset?: string
+  index?: number
+  element?: string
+  x: number
+  y: number
+  order: number
+  layer?: number
+  locked?: boolean
+  creationCode?: string | null
+}
+
+export interface ProjectFile {
+  format: "tilemap-editor"
+  version: 2
+  scene: ProjectDocument["scene"]
+  colliderTypes?: ColliderTypeDefinition[]
+  colliders: Collider[]
+  markers: Marker[]
+  images: Pick<ImageResource, "id" | "name" | "width" | "height">[]
+  tilesets: (Pick<Tileset, "id" | "name" | "imageId" | "mode" | "grid" | "cropCount">)[]
+  elementDefinitions: ElementResource[]
+  tilemaps: (Omit<Tilemap, "tiles"> & { tiles: FileInstance[] })[]
+  elements: FileInstance[]
 }

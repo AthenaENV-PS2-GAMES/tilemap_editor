@@ -255,7 +255,7 @@ export function EditorCanvas({
       const entry = resolveInstance(tile, catalog)
       const image = entry && images.get(entry.imageId)
       if (!entry || !image) {
-        // Unknown legacy assets stay editable and visible as placeholders.
+        // Tiles whose image is not attached yet stay editable and visible as placeholders.
         ctx.strokeStyle = "#f59e0b"
         ctx.strokeRect(tile.x, tile.y, GRID_SIZE, GRID_SIZE)
         continue

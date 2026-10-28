@@ -1,5 +1,4 @@
-import type { ImageResource, ProjectDocument } from "./types"
-import { parseProject } from "./project"
+import type { ImageResource } from "./types"
 
 interface FilePickerWindow extends Window {
   showOpenFilePicker?: (options: { types: { description: string; accept: Record<string, string[]> }[]; multiple: false }) => Promise<{ getFile: () => Promise<File> }[]>
@@ -48,41 +47,8 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 export async function loadProjectImages(images: ImageResource[]) {
-  const loaded = await Promise.all(images.map(async (resource) => [resource.id, await loadImage(resource.src)] as const))
+  const loaded = await Promise.all(images.filter((resource) => resource.src).map(async (resource) => [resource.id, await loadImage(resource.src!)] as const))
   return new Map(loaded)
-}
-
-const embeddedSources = new Map<string, Promise<string>>()
-const decodedSizes = new Map<string, Promise<{ width: number; height: number }>>()
-
-function embedSource(src: string): Promise<string> {
-  if (src.startsWith("data:")) return Promise.resolve(src)
-  const existing = embeddedSources.get(src)
-  if (existing) return existing
-  const result = fetch(src).then(async (response) => {
-    if (!response.ok) throw new Error(`Não foi possível incorporar ${src}.`)
-    return readDataUrl(await response.blob())
-  }).catch((error) => { embeddedSources.delete(src); throw error })
-  embeddedSources.set(src, result)
-  return result
-}
-
-function imageSize(src: string): Promise<{ width: number; height: number }> {
-  const existing = decodedSizes.get(src)
-  if (existing) return existing
-  const result = loadImage(src).then((decoded) => ({ width: decoded.naturalWidth, height: decoded.naturalHeight }))
-    .catch((error) => { decodedSizes.delete(src); throw error })
-  decodedSizes.set(src, result)
-  return result
-}
-
-export async function portableProject(project: ProjectDocument) {
-  const images = await Promise.all(project.images.map(async (image) => {
-    const src = await embedSource(image.src)
-    const size = await imageSize(src)
-    return { ...image, src, ...size }
-  }))
-  return parseProject({ ...project, images })
 }
 
 function downloadBlob(blob: Blob, name: string) {

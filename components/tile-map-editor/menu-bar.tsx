@@ -31,7 +31,8 @@ interface MenuBarProps {
   onImportMap: () => void
   onSaveProject: () => void
   fileBusy: boolean
-  onExport: () => void
+  pendingCount: number
+  onAttach: () => void
   onUndo: () => void
   onRedo: () => void
   onClearAll: () => void
@@ -62,7 +63,8 @@ export function MenuBar({
   onImportMap,
   onSaveProject,
   fileBusy,
-  onExport,
+  pendingCount,
+  onAttach,
   onUndo,
   onRedo,
   onClearAll,
@@ -96,13 +98,13 @@ export function MenuBar({
           <MenubarTrigger className={triggerClass}>Arquivo</MenubarTrigger>
           <MenubarContent className={contentClass}>
             <MenubarItem className={itemClass} disabled={fileBusy} onSelect={onImportMap}>
-              Abrir projeto / mapa antigo…
+              Abrir projeto…
             </MenubarItem>
             <MenubarItem className={itemClass} disabled={fileBusy} onSelect={onSaveProject}>
-              Salvar projeto (com imagens)
+              Salvar projeto (sem imagens)
             </MenubarItem>
-            <MenubarItem className={itemClass} onSelect={onExport}>
-              Exportar mapa antigo
+            <MenubarItem className={itemClass} disabled={!pendingCount} onSelect={onAttach}>
+              Anexar imagens e atlas…{pendingCount > 0 && ` (${pendingCount})`}
             </MenubarItem>
           </MenubarContent>
         </MenubarMenu>

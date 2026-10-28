@@ -1,10 +1,7 @@
-import type { CanvasSize, ColliderTypeDefinition, Crop, ElementResource, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectInstance, ResourceReference, TextureAtlas, Tilemap, Tileset } from "./types"
-import { DEFAULT_COLLIDER_TYPES, GRID_SIZE, defaultLayerFor, normalizeLayer, normalizeTileId } from "./types"
-import { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./default-elements"
-import { createAssetResolver } from "./asset-resolver"
+import type { CanvasSize, ColliderTypeDefinition, Crop, ElementResource, FileInstance, GridConfig, ImageResource, ObjectAlignment, PlacedTile, ProjectDocument, ProjectFile, ProjectInstance, ResourceReference, Tilemap, Tileset } from "./types"
+import { DEFAULT_COLLIDER_TYPES, GRID_SIZE } from "./types"
 
 export const DEFAULT_TILEMAP_ID = "tilemap:default"
-export const DEFAULT_TILESET_ID = "tileset:default"
 export const DEFAULT_OBJECT_ALIGNMENT: ObjectAlignment = { enabled: true, cellWidth: GRID_SIZE, cellHeight: GRID_SIZE, origin: { x: 0, y: 0 } }
 export const DEFAULT_CANVAS_SIZE: CanvasSize = { width: 1024, height: 768 }
 export const MAX_CANVAS_SIZE = 16384
@@ -15,7 +12,7 @@ export function newId(prefix: string) {
 
 export function emptyProject(): ProjectDocument {
   return {
-    format: "tilemap-editor", version: 1, images: [], tilesets: [], elementDefinitions: [],
+    format: "tilemap-editor", version: 2, images: [], tilesets: [], elementDefinitions: [],
     tilemaps: [{ id: DEFAULT_TILEMAP_ID, name: "TileMap", visible: true, layer: 0, cellWidth: GRID_SIZE, cellHeight: GRID_SIZE, origin: { x: 0, y: 0 }, tiles: [] }],
     elements: [], colliders: [], colliderTypes: [], markers: [], scene: { backgroundColor: "#1a1a2e", canvasSize: { ...DEFAULT_CANVAS_SIZE }, objectAlignment: DEFAULT_OBJECT_ALIGNMENT, annotationAlignment: { ...DEFAULT_OBJECT_ALIGNMENT, origin: { ...DEFAULT_OBJECT_ALIGNMENT.origin } } },
   }
@@ -84,25 +81,9 @@ export function atlasCrops(data: unknown, image: Pick<ImageResource, "width" | "
   return crops
 }
 
-export function defaultProject(atlas: TextureAtlas, width: number, height: number): ProjectDocument {
-  const project = emptyProject()
-  project.images.push({ id: "image:default", name: "texture.png", src: "/atlas/texture.png", width, height })
-  project.tilesets.push({ id: DEFAULT_TILESET_ID, name: "Atlas padrão", imageId: "image:default", mode: "atlas", crops: atlasCrops(atlas, { width, height }), legacy: true })
-  for (const [category, entities] of [["Objetos", OBJECTS], ["Inimigos", ENEMIES], ["Player", PLAYER_SPAWN]] as const) {
-    for (const entity of entities) {
-      const id = normalizeTileId(entity.id)
-      const imageId = `image:element:${id}`
-      project.images.push({ id: imageId, name: entity.name, src: entity.imageSrc, width: entity.width, height: entity.height })
-      project.elementDefinitions.push({ id: `element:${id}`, name: entity.name, category, legacyId: id, imageId, crop: { id: "first", name: entity.name, x: 0, y: 0, width: entity.frameWidth ?? entity.width, height: entity.height } })
-    }
-  }
-  return project
-}
-
 export function referenceKey(resource: ResourceReference): string {
-  if (resource.kind === "tile") return `tile:${JSON.stringify([resource.tilesetId, resource.cropId])}`
-  if (resource.kind === "element") return `element:${JSON.stringify(resource.definitionId)}`
-  return `missing:${JSON.stringify(resource.legacyId)}`
+  if (resource.kind === "tile") return `tile:${JSON.stringify([resource.tilesetId, resource.index])}`
+  return `element:${JSON.stringify(resource.definitionId)}`
 }
 
 export interface CatalogEntry {
@@ -118,16 +99,16 @@ export interface CatalogEntry {
 export function createCatalog(project: ProjectDocument) {
   const catalog = new Map<string, CatalogEntry>()
   for (const tileset of project.tilesets) {
-    for (const crop of tileset.crops) {
-      const resource: ResourceReference = { kind: "tile", tilesetId: tileset.id, cropId: crop.id }
+    for (const [index, crop] of tileset.crops.entries()) {
+      const resource: ResourceReference = { kind: "tile", tilesetId: tileset.id, index }
       const key = referenceKey(resource)
-      catalog.set(key, { key, name: crop.name, tileId: tileset.legacy ? crop.name : key, category: tileset.name, imageId: tileset.imageId, crop, resource })
+      catalog.set(key, { key, name: crop.name, tileId: key, category: tileset.name, imageId: tileset.imageId, crop, resource })
     }
   }
   for (const definition of project.elementDefinitions) {
     const resource: ResourceReference = { kind: "element", definitionId: definition.id }
     const key = referenceKey(resource)
-    catalog.set(key, { key, name: definition.name, tileId: definition.legacyId ?? key, category: definition.category, imageId: definition.imageId, crop: definition.crop, resource })
+    catalog.set(key, { key, name: definition.name, tileId: key, category: definition.category, imageId: definition.imageId, crop: definition.crop, resource })
   }
   return catalog
 }
@@ -383,77 +364,21 @@ function position(value: Record<string, unknown>, label: string) {
   if (!finite(value.x) || !finite(value.y)) throw new Error(`Posição inválida em ${label}.`)
 }
 
-export function importLegacy(data: unknown, defaults: ProjectDocument): ProjectDocument {
-  const json = record(data, "Mapa")
-  if (!json.tiles || typeof json.tiles !== "object" || Array.isArray(json.tiles)) throw new Error("O mapa antigo deve conter um objeto tiles.")
-  const project: ProjectDocument = { ...defaults, tilemaps: defaults.tilemaps.map((map) => ({ ...map, tiles: [] })), elements: [], colliders: [], markers: [], scene: { ...defaults.scene, backgroundColor: typeof json.backgroundColor === "string" && /^#[0-9a-f]{6}$/i.test(json.backgroundColor.trim()) ? json.backgroundColor.trim() : "#1a1a2e" } }
-  const catalog = createCatalog(defaults)
-  const entries = [...catalog.values()]
-  const resolveElement = createAssetResolver(Object.fromEntries(entries.filter((e) => e.resource.kind === "element").map((e) => [e.tileId, e])))
-  const resolveTile = createAssetResolver(Object.fromEntries(entries.filter((e) => e.resource.kind === "tile").map((e) => [e.tileId, e])))
-  let index = 0
-  for (const [tileId, values] of Object.entries(json.tiles)) {
-    if (!Array.isArray(values)) throw new Error(`Lista de tiles inválida: ${tileId}.`)
-    const resource = (resolveElement(tileId) ?? resolveTile(tileId))?.resource ?? { kind: "missing" as const, legacyId: tileId }
-    for (const value of values) {
-      const t = record(value, tileId)
-      position(t, tileId)
-      if (t.creationCode !== undefined && t.creationCode !== null && typeof t.creationCode !== "string") throw new Error(`creationCode inválido: ${tileId}.`)
-      const tile: ProjectInstance = { id: `instance:legacy:${index}`, order: index++, tileId, resource, x: t.x as number, y: t.y as number, locked: t.locked === true, layer: t.layer === undefined ? defaultLayerFor(tileId) : normalizeLayer(t.layer), creationCode: t.creationCode as string | null ?? null }
-      if (resource.kind === "element") project.elements.push(tile)
-      else project.tilemaps[0].tiles.push({ ...tile, tilemapId: project.tilemaps[0].id })
-    }
+const IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,/
+
+export function validateMarkers(markers: unknown) {
+  if (!Array.isArray(markers)) throw new Error("Lista de marcadores inválida.")
+  for (const value of markers) {
+    const marker = record(value, "Marcador")
+    position(marker, "marcador")
+    if (typeof marker.name !== "string") throw new Error("Nome de marcador inválido.")
   }
-  if (json.colliders !== undefined) {
-    if (!Array.isArray(json.colliders)) throw new Error("Lista de colliders inválida.")
-    project.colliders = json.colliders.map((value) => {
-      const c = record(value, "Collider"); position(c, "collider")
-      if (!finite(c.width) || c.width <= 0 || !finite(c.height) || c.height <= 0) throw new Error("Dimensões inválidas no collider.")
-      const type = c.type ?? "ground"
-      if (!["ground", "chest", "ladder", "door", "kill"].includes(type as string)) throw new Error("Tipo de collider não suportado.")
-      return { x: c.x as number, y: c.y as number, width: c.width, height: c.height, type: type as ProjectDocument["colliders"][number]["type"] }
-    })
-  }
-  if (json.markers !== undefined) {
-    if (!Array.isArray(json.markers)) throw new Error("Lista de marcadores inválida.")
-    project.markers = json.markers.map((value, i) => {
-      const m = record(value, "Marcador"); position(m, "marcador")
-      return { name: typeof m.name === "string" ? m.name : `marker${i + 1}`, x: m.x as number, y: m.y as number }
-    })
-  }
-  return project
 }
 
-export function legacyExportIssues(project: ProjectDocument): string[] {
-  const issues: string[] = []
-  if (project.colliderTypes?.length) issues.push("O formato antigo não preserva tipos personalizados de collider. Use Salvar projeto.")
-  if (project.tilemaps.length !== 1) issues.push("O formato antigo suporta apenas um tilemap.")
-  if (project.tilemaps.some((map) => map.cellWidth !== GRID_SIZE || map.cellHeight !== GRID_SIZE || map.origin.x !== 0 || map.origin.y !== 0 || !map.visible || (map.layer ?? 0) !== 0)) issues.push("O formato antigo não preserva grades, camadas ou visibilidade de tilemaps.")
-  const alignment = project.scene.objectAlignment ?? DEFAULT_OBJECT_ALIGNMENT
-  if (!alignment.enabled || alignment.cellWidth !== GRID_SIZE || alignment.cellHeight !== GRID_SIZE || alignment.origin.x !== 0 || alignment.origin.y !== 0) issues.push("O formato antigo não preserva o alinhamento de objetos.")
-  const annotations = project.scene.annotationAlignment ?? DEFAULT_OBJECT_ALIGNMENT
-  if (!annotations.enabled || annotations.cellWidth !== GRID_SIZE || annotations.cellHeight !== GRID_SIZE || annotations.origin.x !== 0 || annotations.origin.y !== 0) issues.push("O formato antigo não preserva o alinhamento de marcadores e colliders.")
-  const legacySets = new Set(project.tilesets.filter((set) => set.legacy).map((set) => set.id))
-  const legacyElements = new Set(project.elementDefinitions.filter((def) => def.legacyId).map((def) => def.id))
-  if (editorContent(project).tiles.some((tile) => tile.resource.kind === "tile" ? !legacySets.has(tile.resource.tilesetId) : tile.resource.kind === "element" && !legacyElements.has(tile.resource.definitionId))) issues.push("Há recursos personalizados que o formato antigo não consegue representar. Use Salvar projeto.")
-  return issues
-}
-
-export function exportLegacy(project: ProjectDocument) {
-  const issues = legacyExportIssues(project)
-  if (issues.length) throw new Error(issues.join("\n"))
-  const tiles: Record<string, unknown[]> = Object.create(null)
-  for (const tile of editorContent(project).tiles) {
-    const id = normalizeTileId(tile.tileId)
-    ;(tiles[id] ??= []).push({ x: tile.x, y: tile.y, locked: tile.locked ?? false, layer: tile.layer ?? 0, ...(tile.creationCode !== undefined ? { creationCode: tile.creationCode } : {}) })
-  }
-  return { backgroundColor: project.scene.backgroundColor, tiles, colliders: project.colliders, markers: project.markers }
-}
-
-// Treat files as untrusted documents: check the schema and every reference before replacing a map.
-export function parseProject(data: unknown): ProjectDocument {
+// Validates the in-memory document (also used for the local autosave, which keeps image data).
+export function validateDocument(data: unknown): ProjectDocument {
   const json = record(data, "Projeto")
-  if (json.format !== "tilemap-editor" || json.version !== 1) throw new Error("Formato ou versão de projeto não suportado.")
+  if (json.format !== "tilemap-editor" || json.version !== 2) throw new Error("Formato ou versão de projeto não suportado.")
   for (const key of ["images", "tilesets", "elementDefinitions", "tilemaps", "elements", "colliders", "markers"]) {
     if (!Array.isArray(json[key])) throw new Error(`Lista inválida: ${key}.`)
   }
@@ -474,33 +399,35 @@ export function parseProject(data: unknown): ProjectDocument {
     return ids
   }
   const imageIds = uniqueIds(project.images, "imagens")
-  uniqueIds(project.tilesets, "tilesets"); uniqueIds(project.elementDefinitions, "elementos")
+  const tilesetIds = uniqueIds(project.tilesets, "tilesets")
+  const definitionIds = uniqueIds(project.elementDefinitions, "elementos")
   const mapIds = uniqueIds(project.tilemaps, "tilemaps")
   if (!mapIds.size) throw new Error("O projeto precisa de um tilemap.")
   for (const image of project.images) {
     if (typeof image.name !== "string" || !positiveInteger(image.width) || !positiveInteger(image.height) ||
-        typeof image.src !== "string" || !/^data:image\/(png|jpeg|webp|gif);base64,/.test(image.src)) throw new Error("Imagem inválida: use imagens incorporadas PNG, JPEG, WebP ou GIF.")
+        (image.src !== undefined && (typeof image.src !== "string" || !IMAGE_DATA_URL.test(image.src)))) throw new Error("Imagem inválida: use imagens PNG, JPEG, WebP ou GIF.")
   }
   const imageFor = (imageId: string) => {
     if (!imageIds.has(imageId)) throw new Error("Referência de imagem ausente.")
     return project.images.find((image) => image.id === imageId)!
   }
+  const tilesetSizes = new Map<string, number>()
   for (const set of project.tilesets) {
-    if (typeof set.name !== "string" || !["grid", "atlas"].includes(set.mode) || !Array.isArray(set.crops) || !set.crops.length || set.crops.length > 10000) throw new Error("Tileset inválido.")
+    if (typeof set.name !== "string" || !["grid", "atlas"].includes(set.mode) || !Array.isArray(set.crops) || !positiveInteger(set.cropCount) || set.cropCount > 10000) throw new Error("Tileset inválido.")
     const image = imageFor(set.imageId)
     uniqueIds(set.crops, "recortes")
     for (const crop of set.crops) { if (typeof crop.name !== "string") throw new Error("Nome do recorte inválido."); validateCrop(crop, image) }
     if (set.mode === "grid") {
       if (!set.grid) throw new Error("Configuração de grade ausente.")
-      gridCrops(image, set.grid)
+      if (gridCrops(image, set.grid).length !== set.cropCount) throw new Error(`A grade do tileset "${set.name}" não corresponde ao número de recortes salvo.`)
     }
-    // A file cannot declare arbitrary resources as compatible with the old atlas.
-    if (set.legacy && set.id !== DEFAULT_TILESET_ID) throw new Error("Identidade do atlas antigo inválida.")
+    // An atlas tileset has no crops until its atlas is attached.
+    if (set.crops.length && set.crops.length !== set.cropCount) throw new Error("Número de recortes inconsistente.")
+    tilesetSizes.set(set.id, set.cropCount)
   }
   for (const definition of project.elementDefinitions) {
     if (typeof definition.name !== "string" || !["Objetos", "Inimigos", "Player", "Decoração"].includes(definition.category)) throw new Error("Definição de elemento inválida.")
     validateCrop(record(definition.crop, "Recorte de elemento") as unknown as Crop, imageFor(definition.imageId))
-    if (definition.legacyId !== undefined && typeof definition.legacyId !== "string") throw new Error("ID antigo inválido.")
   }
   for (const map of project.tilemaps) {
     if (typeof map.name !== "string" || typeof map.visible !== "boolean" || !Array.isArray(map.tiles) ||
@@ -509,15 +436,16 @@ export function parseProject(data: unknown): ProjectDocument {
   }
   const instances = editorContent(project).tiles
   uniqueIds(instances, "instâncias")
-  const catalog = createCatalog(project)
   for (const tile of instances) {
     position(record(tile, "Instância"), "instância")
     if (typeof tile.tileId !== "string" || !nonnegativeInteger(tile.order) || (tile.locked !== undefined && typeof tile.locked !== "boolean") ||
         (tile.layer !== undefined && (!nonnegativeInteger(tile.layer) || tile.layer > 4)) ||
         (tile.creationCode !== undefined && tile.creationCode !== null && typeof tile.creationCode !== "string")) throw new Error("Propriedades de instância inválidas.")
     const resource = record(tile.resource, "Referência de recurso")
-    if (resource.kind === "missing") { if (typeof resource.legacyId !== "string") throw new Error("Recurso antigo inválido.") }
-    else if (!["tile", "element"].includes(resource.kind as string) || !resolveInstance(tile, catalog)) throw new Error("Referência de recurso ausente.")
+    if (resource.kind === "tile") {
+      const size = tilesetSizes.get(resource.tilesetId as string)
+      if (size === undefined || !nonnegativeInteger(resource.index) || resource.index >= size) throw new Error("Referência de recurso ausente.")
+    } else if (resource.kind !== "element" || !definitionIds.has(resource.definitionId as string)) throw new Error("Referência de recurso ausente.")
   }
   for (const map of project.tilemaps) {
     if (map.tiles.some((tile) => tile.resource.kind === "element" || tile.tilemapId !== map.id)) throw new Error("Instância associada ao tilemap errado.")
@@ -530,13 +458,140 @@ export function parseProject(data: unknown): ProjectDocument {
     if (!finite(collider.width) || collider.width <= 0 || !finite(collider.height) || collider.height <= 0 ||
         typeof collider.type !== "string" || !validColliderTypes.has(collider.type)) throw new Error("Collider inválido ou tipo não definido.")
   }
-  // Reuse the legacy structural checks for markers.
-  importLegacy({ tiles: {}, markers: project.markers }, emptyProject())
+  validateMarkers(project.markers)
   return project
 }
 
+function fileInstance(tile: ProjectInstance): FileInstance {
+  return {
+    ...(tile.resource.kind === "tile" ? { tileset: tile.resource.tilesetId, index: tile.resource.index } : { element: tile.resource.definitionId }),
+    x: tile.x, y: tile.y, order: tile.order,
+    ...(tile.layer ? { layer: tile.layer } : {}),
+    ...(tile.locked ? { locked: true } : {}),
+    ...(tile.creationCode != null ? { creationCode: tile.creationCode } : {}),
+  }
+}
+
+// The saved file carries no image data and no crops: only tileset indexes and positions.
+export function serializeProject(project: ProjectDocument): ProjectFile {
+  return {
+    format: "tilemap-editor", version: 2,
+    scene: project.scene,
+    ...(project.colliderTypes?.length ? { colliderTypes: project.colliderTypes } : {}),
+    colliders: project.colliders, markers: project.markers,
+    images: project.images.map(({ id, name, width, height }) => ({ id, name, width, height })),
+    tilesets: project.tilesets.map(({ id, name, imageId, mode, grid, cropCount }) => ({ id, name, imageId, mode, ...(grid ? { grid } : {}), cropCount })),
+    elementDefinitions: project.elementDefinitions,
+    tilemaps: project.tilemaps.map((map) => ({ ...map, tiles: map.tiles.map(fileInstance) })),
+    elements: project.elements.map(fileInstance),
+  }
+}
+
+// Treat files as untrusted documents: check the schema and every reference before replacing a map.
+export function parseProject(data: unknown): ProjectDocument {
+  const json = record(data, "Projeto")
+  if (json.format !== "tilemap-editor") throw new Error("Arquivo não reconhecido: não é um projeto do editor.")
+  if (json.version !== 2) throw new Error("Versão de projeto não suportada. Só o formato atual (versão 2) pode ser aberto.")
+  for (const key of ["images", "tilesets", "elementDefinitions", "tilemaps", "elements"]) {
+    if (!Array.isArray(json[key])) throw new Error(`Lista inválida: ${key}.`)
+  }
+  const file = json as unknown as ProjectFile
+  const images: ImageResource[] = file.images.map((image) => {
+    const entry = record(image, "Imagem")
+    if ("src" in entry) throw new Error("O arquivo de projeto não deve conter dados de imagem.")
+    return { id: entry.id as string, name: entry.name as string, width: entry.width as number, height: entry.height as number }
+  })
+  const tilesets: Tileset[] = file.tilesets.map((set) => {
+    const entry = record(set, "Tileset")
+    const image = images.find((item) => item.id === entry.imageId)
+    if (!image || (entry.mode !== "grid" && entry.mode !== "atlas")) throw new Error("Tileset inválido.")
+    const grid = entry.grid as GridConfig | undefined
+    return { id: entry.id as string, name: entry.name as string, imageId: image.id, mode: entry.mode, ...(grid ? { grid } : {}), cropCount: entry.cropCount as number, crops: entry.mode === "grid" && grid ? gridCrops(image, grid) : [] }
+  })
+  const inflate = (value: FileInstance, tilemapId?: string): ProjectInstance => {
+    const entry = record(value, "Instância")
+    position(entry, "instância")
+    const resource: ResourceReference = typeof entry.element === "string"
+      ? { kind: "element", definitionId: entry.element }
+      : { kind: "tile", tilesetId: entry.tileset as string, index: entry.index as number }
+    return {
+      id: newId("instance"), order: entry.order as number, tileId: referenceKey(resource), resource,
+      x: entry.x as number, y: entry.y as number, layer: (entry.layer as number | undefined) ?? 0, locked: entry.locked === true,
+      ...(typeof entry.creationCode === "string" ? { creationCode: entry.creationCode } : {}),
+      ...(tilemapId !== undefined ? { tilemapId } : {}),
+    }
+  }
+  const { colliders, colliderTypes } = defineMissingColliderTypes(json.colliders, json.colliderTypes ?? [])
+  const document = {
+    format: "tilemap-editor", version: 2, images, tilesets,
+    elementDefinitions: file.elementDefinitions,
+    tilemaps: file.tilemaps.map((map) => {
+      const entry = record(map, "Tilemap")
+      if (!Array.isArray(entry.tiles)) throw new Error("Tilemap inválido.")
+      return { ...(entry as unknown as Tilemap), tiles: (entry.tiles as FileInstance[]).map((tile) => inflate(tile, entry.id as string)) }
+    }),
+    elements: file.elements.map((element) => inflate(element)),
+    colliders, colliderTypes, markers: json.markers, scene: json.scene,
+  } as unknown as ProjectDocument
+  return validateDocument(document)
+}
+
+const MISSING_TYPE_COLORS = ["#f97316", "#06b6d4", "#ec4899", "#84cc16", "#8b5cf6", "#14b8a6"]
+
+// A collider may name a type the file does not define: create it instead of rejecting the map.
+function defineMissingColliderTypes(colliders: unknown, declared: unknown): { colliders: unknown; colliderTypes: unknown } {
+  if (!Array.isArray(colliders) || !Array.isArray(declared)) return { colliders, colliderTypes: declared }
+  const known = new Set<string>([...DEFAULT_COLLIDER_TYPES.map((type) => type.id), ...declared.map((type) => (type as ColliderTypeDefinition | null)?.id)].filter((id): id is string => typeof id === "string"))
+  const labels = new Set<string>([...DEFAULT_COLLIDER_TYPES, ...declared as ColliderTypeDefinition[]].map((type) => String(type?.label).toLocaleLowerCase()))
+  const created = new Map<string, string>()
+  const types = [...declared]
+  const remapped = colliders.map((value) => {
+    const collider = value as Record<string, unknown> | null
+    const type = collider?.type
+    if (typeof type !== "string" || known.has(type)) return value
+    const label = type.trim().slice(0, 40)
+    const byDefault = DEFAULT_COLLIDER_TYPES.find((item) => item.id === label.toLocaleLowerCase())
+    let id = byDefault?.id ?? created.get(type)
+    if (!id) {
+      let unique = label || "collider"
+      for (let n = 2; labels.has(unique.toLocaleLowerCase()); n++) unique = `${label.slice(0, 36) || "collider"} ${n}`
+      id = newId("collider-type")
+      created.set(type, id)
+      labels.add(unique.toLocaleLowerCase())
+      types.push({ id, label: unique, color: MISSING_TYPE_COLORS[(types.length) % MISSING_TYPE_COLORS.length] })
+    }
+    return { ...collider, type: id }
+  })
+  return { colliders: remapped, colliderTypes: types }
+}
+
+// Images the user still has to attach after opening a project file.
+export function pendingImages(project: ProjectDocument) {
+  return project.images.filter((image) => !image.src).map((image) => ({
+    image,
+    tilesets: project.tilesets.filter((set) => set.imageId === image.id),
+    elements: project.elementDefinitions.filter((definition) => definition.imageId === image.id),
+  }))
+}
+
+// Attaches an image (and the atlas of the tilesets that use it) to a project that was opened without them.
+export function attachImage(project: ProjectDocument, imageId: string, source: { src: string; width: number; height: number }, atlas?: unknown): ProjectDocument {
+  const image = project.images.find((item) => item.id === imageId)
+  if (!image) throw new Error("Imagem não encontrada no projeto.")
+  if (!IMAGE_DATA_URL.test(source.src)) throw new Error("Formato de imagem não suportado.")
+  if (source.width !== image.width || source.height !== image.height) throw new Error(`A imagem tem ${source.width} × ${source.height} px, mas o projeto espera ${image.width} × ${image.height} px.`)
+  const tilesets = project.tilesets.map((set) => {
+    if (set.imageId !== imageId || set.mode !== "atlas") return set
+    if (atlas === undefined) throw new Error(`Anexe também o atlas JSON do tileset "${set.name}".`)
+    const crops = atlasCrops(atlas, image)
+    if (crops.length !== set.cropCount) throw new Error(`O atlas tem ${crops.length} recortes, mas o tileset "${set.name}" foi salvo com ${set.cropCount}.`)
+    return { ...set, crops }
+  })
+  return { ...project, images: project.images.map((item) => item === image ? { ...item, src: source.src } : item), tilesets }
+}
+
 export function addTileset(project: ProjectDocument, image: ImageResource, tileset: Tileset): ProjectDocument {
-  if (project.images.some((item) => item.id === image.id) || project.tilesets.some((item) => item.id === tileset.id) || tileset.imageId !== image.id) throw new Error("Identidade de recurso duplicada ou inválida.")
+  if (project.images.some((item) => item.id === image.id) || project.tilesets.some((item) => item.id === tileset.id) || tileset.imageId !== image.id || tileset.cropCount !== tileset.crops.length) throw new Error("Identidade de recurso duplicada ou inválida.")
   for (const crop of tileset.crops) validateCrop(crop, image)
   return { ...project, images: [...project.images, image], tilesets: [...project.tilesets, tileset] }
 }

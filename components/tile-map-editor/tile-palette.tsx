@@ -50,7 +50,7 @@ export function TilePalette({ project, catalog, images, selectedTileId, onSelect
             <select aria-label="Tileset ativo" className={inputClass} value={activeSetId ?? ""} onChange={(e) => {
               const next = project.tilesets.find((set) => set.id === e.target.value)
               setSetId(e.target.value)
-              if (next?.crops[0]) onSelectTile(referenceKey({ kind: "tile", tilesetId: next.id, cropId: next.crops[0].id }))
+              if (next?.crops.length) onSelectTile(referenceKey({ kind: "tile", tilesetId: next.id, index: 0 }))
             }}>
               {project.tilesets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}
             </select>
@@ -62,7 +62,7 @@ export function TilePalette({ project, catalog, images, selectedTileId, onSelect
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "tiles" && tileset && image && <div className="space-y-2 p-2">
-          <SheetPreview image={image} crops={tileset.crops} selectedCropId={selected?.crop.id} onSelect={(crop) => onSelectTile(referenceKey({ kind: "tile", tilesetId: tileset.id, cropId: crop.id }))} />
+          <SheetPreview image={image} crops={tileset.crops} selectedCropId={selected?.crop.id} onSelect={(crop) => onSelectTile(referenceKey({ kind: "tile", tilesetId: tileset.id, index: tileset.crops.indexOf(crop) }))} />
           <p className="text-[10px] text-[#8888aa]">Clique em um recorte para pintar. O tamanho visual é preservado; a grade do cenário é de 16 × 16.</p>
           <select aria-label="Recorte selecionado" className={inputClass} value={selected?.resource.kind === "tile" ? selected.key : ""} onChange={(e) => onSelectTile(e.target.value)}>
             <option value="" disabled>Selecionar recorte</option>
@@ -153,7 +153,7 @@ function ImportTilesetDialog({ open, onOpenChange, onAddTileset }: Pick<TilePale
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="max-h-[90vh] overflow-y-auto border-[#2a2a4a] bg-[#16213e] text-[#e0e0e0]">
       <DialogTitle>Importar tileset</DialogTitle>
-      <DialogDescription>Carregue uma spritesheet e configure seus recortes. A imagem será incorporada ao salvar o projeto.</DialogDescription>
+      <DialogDescription>Carregue uma spritesheet e configure seus recortes. A imagem fica apenas neste navegador; o arquivo do projeto guarda só os índices e as posições, e você anexa a imagem (e o atlas) ao abri-lo de novo.</DialogDescription>
       <label className="space-y-1 text-xs">Imagem (PNG, JPEG, WebP ou GIF)
         <input aria-label="Imagem do tileset" type="file" accept="image/png,image/jpeg,image/webp,image/gif" className={inputClass} onChange={async (event) => {
           const file = event.target.files?.[0]
@@ -187,12 +187,9 @@ function ImportTilesetDialog({ open, onOpenChange, onAddTileset }: Pick<TilePale
       {(error || preview.error) && <p role="alert" className="text-xs text-amber-300">{error ?? preview.error}</p>}
       <button className={buttonClass} disabled={loading || !image || !decoded || !name.trim() || !!preview.error || !!error} onClick={() => {
         if (!image || !decoded || preview.error) return
-        onAddTileset(image, { id: newId("tileset"), name: name.trim(), imageId: image.id, mode, ...(mode === "grid" ? { grid } : {}), crops: preview.crops }, decoded)
+        onAddTileset(image, { id: newId("tileset"), name: name.trim(), imageId: image.id, mode, ...(mode === "grid" ? { grid } : {}), crops: preview.crops, cropCount: preview.crops.length }, decoded)
         onOpenChange(false)
       }}>{loading ? "Carregando…" : "Adicionar tileset"}</button>
     </DialogContent>
   </Dialog>
 }
-
-// Kept for integrations using the original built-in definitions.
-export { OBJECTS, ENEMIES, PLAYER_SPAWN } from "./default-elements"

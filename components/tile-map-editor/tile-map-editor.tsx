@@ -6,7 +6,6 @@ import type {
   PlacedTile,
   Collider,
   Marker,
-  TextureAtlas,
   ProjectDocument,
   ObjectAlignment,
   ElementResource,
@@ -22,6 +21,7 @@ import { LayersPanel } from "./layers-panel"
 import { TilemapsPanel } from "./tilemaps-panel"
 import { ObjectAlignmentPanel } from "./object-alignment-panel"
 import { TilePalette } from "./tile-palette"
+import { AttachDialog } from "./attach-dialog"
 import { EditorCanvas } from "./editor-canvas"
 import { PropertiesPanel } from "./properties-panel"
 import type { EditorState } from "./use-history"
@@ -29,18 +29,14 @@ import { useHistory } from "./use-history"
 import { normalizeBackgroundColor } from "@/lib/utils"
 import { selectMatchingElements, updateSelectedElements } from "./selection"
 import { createSpatialIndex } from "./selection-index"
-import { addColliderType, addElementDefinition, addTileset, colliderTypeDefinitions, createCatalog, createTilemap, deleteTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, defaultProject, editorContent, emptyProject, exportLegacy, importLegacy, moveElements, newId, paintTile, eraseTile, eraseArea, type WorldRect, parseProject, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
-import { loadImage, loadProjectImages, pickJsonFile, portableProject, saveJson } from "./project-files"
+import { addColliderType, addElementDefinition, addTileset, colliderTypeDefinitions, createCatalog, createTilemap, deleteTilemap, DEFAULT_CANVAS_SIZE, DEFAULT_OBJECT_ALIGNMENT, attachImage, editorContent, emptyProject, moveElements, newId, paintTile, eraseTile, eraseArea, type WorldRect, parseProject, pendingImages, referenceKey, renameTilemap, replaceEditorContent, resolveInstance, serializeProject, setTilemapLayer, setTilemapVisibility, snapToTilemap, updateAnnotationAlignment, updateCanvasSize, updateObjectAlignment, updateTilemapGrid, type GridChangePolicy, type TilemapGrid } from "./project"
+import { loadProjectImages, pickJsonFile, saveJson } from "./project-files"
 import { loadAutosave, saveAutosave } from "./autosave"
-
-// Default atlas and spritesheet paths
-const DEFAULT_ATLAS_URL = "/atlas/texture.json"
-const DEFAULT_SPRITESHEET_URL = "/atlas/texture.png"
 
 export function TileMapEditor() {
   const [ready, setReady] = useState(false)
   const [images, setImages] = useState<Map<string, HTMLImageElement>>(new Map())
-  const defaultsRef = useRef<ProjectDocument | null>(null)
+  const [attachOpen, setAttachOpen] = useState(false)
   const [fileBusy, setFileBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [activeTool, setActiveTool] = useState<Tool>("place")
@@ -49,7 +45,6 @@ export function TileMapEditor() {
   const [colliderSelection, setColliderSelection] = useState<Collider[]>([])
   const [markerSelection, setMarkerSelection] = useState<Marker[]>([])
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 })
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showColliders, setShowColliders] = useState(true)
   const [showMarkers, setShowMarkers] = useState(true)
@@ -71,10 +66,12 @@ export function TileMapEditor() {
     canUndo,
     canRedo,
     reset: resetHistory,
+    transformAll,
   } = useHistory(emptyProject())
   const historyState = useMemo(() => editorContent(project), [project])
   const activeTilemap = project.tilemaps.find((map) => map.id === activeTilemapId) ?? project.tilemaps[0]
   const catalog = useMemo(() => createCatalog(project), [project.images, project.tilesets, project.elementDefinitions])
+  const pendingCount = useMemo(() => pendingImages(project).length, [project.images])
   const backgroundColor = project.scene.backgroundColor
   const canvasSize = project.scene.canvasSize ?? DEFAULT_CANVAS_SIZE
   const pushState = useCallback((content: EditorState) => {
@@ -162,57 +159,38 @@ export function TileMapEditor() {
     clearSelection()
   }, [tiles, colliders, markers, selectedTiles, selectedColliders, selectedMarkers, pushState, clearSelection])
 
-  // Load the default atlas and spritesheet, then start with a blank map
+  // Start from an empty project, or recover the local autosave (which keeps the images in this browser).
   useEffect(() => {
     let cancelled = false
 
-    async function loadDefaults() {
+    async function start() {
+      let initial = emptyProject()
+      let cache = new Map<string, HTMLImageElement>()
       try {
-        const atlasRes = await fetch(DEFAULT_ATLAS_URL)
-        if (!atlasRes.ok) throw new Error("Failed to load atlas")
-        const loadedAtlas: TextureAtlas = await atlasRes.json()
-
-        const img = await loadImage(DEFAULT_SPRITESHEET_URL)
-        const defaults = defaultProject(loadedAtlas, img.naturalWidth, img.naturalHeight)
-        const defaultsCache = await loadProjectImages(defaults.images)
-        for (const resource of defaults.images) {
-          const decoded = defaultsCache.get(resource.id)!
-          resource.width = decoded.naturalWidth
-          resource.height = decoded.naturalHeight
+        const recovered = await loadAutosave()
+        if (recovered) {
+          const recoveredImages = await loadProjectImages(recovered.images)
+          if (recovered.images.some((resource) => {
+            const decoded = recoveredImages.get(resource.id)
+            return decoded && (resource.width !== decoded.naturalWidth || resource.height !== decoded.naturalHeight)
+          })) throw new Error("Dimensões de imagem inválidas no salvamento automático.")
+          initial = recovered
+          cache = recoveredImages
+          setMessage("Projeto recuperado do salvamento automático.")
         }
-        let initial = defaults
-        let cache = defaultsCache
-        try {
-          const recovered = await loadAutosave()
-          if (recovered) {
-            const recoveredImages = await loadProjectImages(recovered.images)
-            if (recovered.images.some((resource) => {
-              const decoded = recoveredImages.get(resource.id)!
-              return resource.width !== decoded.naturalWidth || resource.height !== decoded.naturalHeight
-            })) throw new Error("Dimensões de imagem inválidas no salvamento automático.")
-            initial = recovered
-            cache = recoveredImages
-            setMessage("Projeto recuperado do salvamento automático.")
-          }
-        } catch (error) {
-          console.error("Erro ao recuperar salvamento automático:", error)
-          setMessage("Não foi possível recuperar o salvamento automático; o editor abriu um projeto vazio.")
-        }
-        if (cancelled) return
-        defaultsRef.current = defaults
-        setImages(cache)
-        resetHistory(initial)
-        setActiveTilemapId(initial.tilemaps[0].id)
-        setSelectedTileId(createCatalog(initial).keys().next().value ?? null)
-        setReady(true)
-      } catch (err) {
-        if (cancelled) return
-        console.error("Error loading defaults:", err)
-        setLoadError("Erro ao carregar atlas/spritesheet padrao")
+      } catch (error) {
+        console.error("Erro ao recuperar salvamento automático:", error)
+        setMessage("Não foi possível recuperar o salvamento automático; o editor abriu um projeto vazio.")
       }
+      if (cancelled) return
+      setImages(cache)
+      resetHistory(initial)
+      setActiveTilemapId(initial.tilemaps[0].id)
+      setSelectedTileId(createCatalog(initial).keys().next().value ?? null)
+      setReady(true)
     }
 
-    loadDefaults()
+    start()
     return () => {
       cancelled = true
     }
@@ -223,8 +201,7 @@ export function TileMapEditor() {
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {
-        const portable = await portableProject(project)
-        if (!cancelled) await saveAutosave(portable)
+        if (!cancelled) await saveAutosave(project)
       } catch (error) {
         if (!cancelled) {
           console.error("Erro no salvamento automático:", error)
@@ -416,18 +393,12 @@ export function TileMapEditor() {
     setMessage(null)
     try {
       const file = await pickJsonFile()
-      if (file && defaultsRef.current) {
+      if (file) {
         const json = JSON.parse(await file.text())
-        const next = json.format !== undefined || json.version !== undefined
-          ? parseProject(json)
-          : importLegacy(json, defaultsRef.current)
-        const cache = await loadProjectImages(next.images)
-        for (const resource of next.images) {
-          const decoded = cache.get(resource.id)!
-          if (resource.width !== decoded.naturalWidth || resource.height !== decoded.naturalHeight) throw new Error(`Dimensões incorretas na imagem ${resource.name}.`)
-        }
+        const next = parseProject(json)
+        const createdTypes = (next.colliderTypes?.length ?? 0) - (Array.isArray(json.colliderTypes) ? json.colliderTypes.length : 0)
         resetHistory(next)
-        setImages(cache)
+        setImages(new Map())
         clearSelection()
         setHiddenLayers([])
         setActiveLayer(0)
@@ -435,8 +406,13 @@ export function TileMapEditor() {
         setCamera({ x: 0, y: 0, zoom: 1 })
         setSelectedTileId(createCatalog(next).keys().next().value ?? null)
         mapFileNameRef.current = file.name
-        const missing = editorContent(next).tiles.filter((tile) => tile.resource.kind === "missing").length
-        setMessage(missing ? `${missing} instância(s) sem imagem conhecida foram preservadas e aparecem com contorno amarelo.` : "Projeto aberto.")
+        const pending = pendingImages(next).length
+        const notes = [
+          pending ? `Anexe ${pending} imagem(ns) para ver os tiles (contornos amarelos até lá).` : "",
+          createdTypes > 0 ? `${createdTypes} tipo(s) de collider ausente(s) no arquivo foram criados.` : "",
+        ].filter(Boolean)
+        setMessage(["Projeto aberto.", ...notes].join(" "))
+        if (pending) setAttachOpen(true)
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Erro ao importar o arquivo JSON.")
@@ -445,10 +421,18 @@ export function TileMapEditor() {
     }
   }, [resetHistory, clearSelection])
 
+  const handleAttach = useCallback((imageId: string, source: { src: string; width: number; height: number }, decoded: HTMLImageElement, atlas?: unknown) => {
+    // Validate against the current document first; the same change is then applied to every history snapshot.
+    attachImage(project, imageId, source, atlas)
+    transformAll((state) => state.images.some((image) => image.id === imageId) ? attachImage(state, imageId, source, atlas) : state)
+    setImages((cache) => new Map(cache).set(imageId, decoded))
+    setMessage(null)
+  }, [project, transformAll])
+
   const handleAddTileset = useCallback((image: ImageResource, set: Tileset, decoded: HTMLImageElement) => {
     pushProject(addTileset(project, image, set))
     setImages((cache) => new Map(cache).set(image.id, decoded))
-    setSelectedTileId(referenceKey({ kind: "tile", tilesetId: set.id, cropId: set.crops[0].id }))
+    setSelectedTileId(referenceKey({ kind: "tile", tilesetId: set.id, index: 0 }))
     clearSelection()
     setActiveTool("place")
     setActiveLayer(0)
@@ -517,9 +501,8 @@ export function TileMapEditor() {
     setFileBusy(true)
     setMessage(null)
     try {
-      const portable = await portableProject(project)
-      const saved = await saveJson(portable, mapFileNameRef.current.replace(/(?:\.project)?\.json$/i, "") + ".project.json")
-      if (saved) setMessage("Projeto salvo com imagens incorporadas.")
+      const saved = await saveJson(serializeProject(project), mapFileNameRef.current.replace(/(?:\.project)?\.json$/i, "") + ".project.json")
+      if (saved) setMessage("Projeto salvo sem imagens: o arquivo guarda só os índices dos tiles e as posições.")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Erro ao salvar projeto.")
     } finally {
@@ -544,18 +527,6 @@ export function TileMapEditor() {
     return () =>
       document.removeEventListener("fullscreenchange", handleFullscreenChange)
   }, [])
-
-  const handleExport = useCallback(async () => {
-    setFileBusy(true)
-    try {
-      const saved = await saveJson(exportLegacy(project), mapFileNameRef.current.replace(/\.project\.json$/i, ".json"))
-      if (saved) setMessage("Mapa exportado no formato antigo.")
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Erro ao exportar mapa.")
-    } finally {
-      setFileBusy(false)
-    }
-  }, [project])
 
   const handleUpdateSelectedTile = useCallback(
     (changes: Partial<PlacedTile>) => {
@@ -632,14 +603,10 @@ export function TileMapEditor() {
   if (!ready) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#1a1a2e] text-sm text-[#8888aa]">
-        {loadError ? (
-          <span className="text-red-400">{loadError}</span>
-        ) : (
-          <div className="flex items-center gap-2">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#4a90d9] border-t-transparent" />
-            Carregando...
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#4a90d9] border-t-transparent" />
+          Carregando...
+        </div>
       </div>
     )
   }
@@ -665,7 +632,8 @@ export function TileMapEditor() {
         fileBusy={fileBusy}
         onSaveProject={handleSaveProject}
         onImportMap={handleImportMap}
-        onExport={handleExport}
+        pendingCount={pendingCount}
+        onAttach={() => setAttachOpen(true)}
         onUndo={handleUndo}
         onRedo={handleRedo}
         onClearAll={handleClearAll}
@@ -678,6 +646,7 @@ export function TileMapEditor() {
           {!fileBusy && <button aria-label="Fechar aviso" onClick={() => setMessage(null)}>×</button>}
         </div>
       )}
+      <AttachDialog open={attachOpen} onOpenChange={setAttachOpen} project={project} onAttach={handleAttach} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ToolsSidebar activeTool={activeTool} onToolChange={setActiveTool} />
         <TilePalette

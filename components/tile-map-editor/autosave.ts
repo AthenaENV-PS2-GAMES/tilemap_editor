@@ -1,7 +1,8 @@
 import type { ProjectDocument } from "./types"
-import { parseProject } from "./project"
+import { validateDocument } from "./project"
 
-const DATABASE = "tilemap-editor-autosave"
+// v2: the earlier database held version 1 projects, which are no longer supported.
+const DATABASE = "tilemap-editor-autosave-v2"
 const STORE = "projects"
 
 function openDatabase(): Promise<IDBDatabase | null> {
@@ -23,7 +24,7 @@ export async function loadAutosave(): Promise<ProjectDocument | null> {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
-    return value === undefined ? null : parseProject(value)
+    return value === undefined ? null : validateDocument(value)
   } finally { db.close() }
 }
 

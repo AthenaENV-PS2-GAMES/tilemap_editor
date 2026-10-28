@@ -63,7 +63,16 @@ export function useHistory<T>(initialState: T) {
     commit({ past: [], present: next, future: [] })
   }, [commit])
 
+  // Applies a change that is not an edit (e.g. attaching an image) to every snapshot, so undo cannot revert it.
+  const transformAll = useCallback((fn: (state: T) => T) => {
+    const current = historyRef.current
+    const next = { past: current.past.map(fn), present: fn(current.present), future: current.future.map(fn) }
+    batchStart.current = batchStart.current && { state: fn(batchStart.current.state) }
+    commit(next)
+  }, [commit])
+
   return {
+    transformAll,
     state: history.present, pushState, startBatch, endBatch, undo, redo, reset,
     canUndo: history.past.length > 0, canRedo: history.future.length > 0,
     historyLength: history.past.length, futureLength: history.future.length,
